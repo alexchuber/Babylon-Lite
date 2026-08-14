@@ -288,9 +288,9 @@ after re-import so parity isolates geometry, hierarchy, and winding, and new BJS
 generated through this repository's own parity harness.
 
 **Build and footprint.** The existing tree-shaking tests are **extended**, not duplicated, to prove
-the exporter export tree-shakes away. The public-API/type test continues to enforce the root-only
-export map unmodified. Bundle verification uses filtered per-scene builds against the smallest
-ceilings first, with manifest diffs proving no unrelated scene moved.
+the exporter's public export tree-shakes away. The public-API/type test continues to enforce the
+root-only export map unmodified. Bundle verification uses filtered per-scene builds against the
+smallest ceilings first, with manifest diffs proving no unrelated scene moved.
 
 **Agent guardrails.** Validation stays scoped: focused unit and plumbing tests, the focused exporter
 parity specs, filtered bundle builds, demo smoke checks, and lint/typecheck. No all-scene suite, no
