@@ -194,6 +194,10 @@ extended rather than duplicated.
 
 ## PR completeness reference
 
+Use [this Babylon-Lite PR](https://github.com/BabylonJS/Babylon-Lite/pull/528) (adds line system API) for reference on what a new feature's
+PR might contain, especially one that keeps a minimal scope and was added to begin
+parity work with an existing a Babylon.js feature.
+
 Use [Babylon-Lite PR #534](https://github.com/BabylonJS/Babylon-Lite/pull/534)
 (`ea876f56`, screen-space effects) as the model for a complete feature landing,
 not as an implementation template. Applicable layers are: root API/type exports,
