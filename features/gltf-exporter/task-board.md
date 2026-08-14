@@ -11,9 +11,10 @@
 
 ## Completed
 
-| M   | ID   | Task                              | Skill            | Notes                                                  |
-| --- | ---- | --------------------------------- | ---------------- | ------------------------------------------------------ |
-|     | T-01 | Goals — review or create goals.md | review-goals     | done 2026-08-13 · goals.md, goals-review.md            |
-|     | T-02 | Visual mocks (optional)           | create-html-mock | skipped 2026-08-13 — no UI component, pure API feature |
+| M   | ID    | Task                              | Skill            | Notes                                                  |
+| --- | ----- | --------------------------------- | ---------------- | ------------------------------------------------------ |
+|     | T-01  | Goals — review or create goals.md | review-goals     | done 2026-08-13 · goals.md, goals-review.md            |
+|     | T-02  | Visual mocks (optional)           | create-html-mock | skipped 2026-08-13 — no UI component, pure API feature |
+|     | T-PRD | PRD / spec                        | to-spec          | done 2026-08-14 · prd.md, synthesized from T-01–T-03   |
 
 ## Untriaged
