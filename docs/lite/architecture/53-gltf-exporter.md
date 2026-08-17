@@ -27,9 +27,8 @@ exportSceneGLB(scene)
   -> Blob("model/gltf-binary")
 ```
 
-The 63 normative requirements in
-`features/gltf-exporter/requirements.md` govern this contract. Babylon.js is
-the behavioral reference for handedness, conversion root removal, winding, and
+This document is the complete v1 contract for the exporter. Babylon.js is the
+behavioral reference for handedness, conversion root removal, winding, and
 related exporter details; its source and tests are not copied.
 
 glTF names follow the
