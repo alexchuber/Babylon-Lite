@@ -4,67 +4,83 @@
 
 ## Purpose
 
-Export the current, live contents of a Babylon Lite `SceneContext` as one
-portable glTF 2.0 GLB. V1 is deliberately a small static-geometry exporter:
-it exports the mesh graph owned by the scene, current node transforms, retained
-CPU positions/normals/indices, and optional `TEXCOORD_0`. It does not attempt a
-source-preserving round trip, GPU readback, material export, deformation bake,
-or general scene repair.
+Export the current contents of a Babylon Lite `SceneContext` as one portable
+glTF 2.0 GLB. V1 is a small, static geometry exporter:
 
-The scene boundary is the `SceneNode` ancestor closure of `scene.meshes`. A
-mesh is a seed; every live `SceneNode` ancestor needed to place that mesh is
-included until a non-`SceneNode` world-matrix provider is reached.
-Transform-only ancestors and loader-created mesh wrappers are retained, except
-for the structural no-op coordinate-conversion root described below.
-Unrelated nodes are not exported. Visibility and metadata are ignored, without
-warnings.
+- The scene graph contains every mesh in `scene.meshes` and the `SceneNode`
+  ancestors needed to place it.
+- The output preserves the selected hierarchy, names, current transforms, mesh
+  wrappers, retained CPU positions, normals, indices, and optional `TEXCOORD_0`.
+- The output contains no materials, textures, cameras, lights, animation,
+  deformation baking, metadata, extensions, or external files.
+- The exporter reads the current scene state; it does not promise a
+  source-preserving round trip.
+- It performs no GPU readback, general graph repair, or full runtime validation
+  of mesh data.
 
-The implementation is private and two-phase:
+The exporter has two private phases:
 
 ```text
 exportSceneGLB(scene)
-  -> collectSceneForGltf(scene)       // synchronous, source snapshot
-  -> serializeGlb(collected)          // asynchronous, CPU conversion and GLB
+  -> collectSceneForGltf(scene)       // synchronous graph and data collection
+  -> serializeGlb(collected)          // asynchronous CPU conversion and packing
   -> Blob("model/gltf-binary")
 ```
 
-This contract is governed by the 63 normative requirements in
-`features/gltf-exporter/requirements.md`. Babylon.js behavior resolves
-handedness and winding ambiguity, but Babylon.js source is a behavioral
-reference only; its implementation is not copied.
+The 63 normative requirements in
+`features/gltf-exporter/requirements.md` govern this contract. Babylon.js is
+the behavioral reference for handedness, conversion root removal, winding, and
+related exporter details; its source and tests are not copied.
 
-## Public API Surface (types, functions, constants — full signatures)
+glTF names follow the
+[glTF 2.0 concepts](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#concepts):
+scene, node, mesh, primitive, attribute, accessor, buffer view, buffer, JSON
+chunk, and BIN chunk.
+
+For this document:
+
+| Term          | Meaning                                                                                                                  |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Selected node | A mesh in `scene.meshes` or one of its `SceneNode` ancestors, stopping before a non-`SceneNode` world matrix provider.   |
+| Base geometry | Retained CPU positions, normals, indices, and optional UV0 before skeleton, morph, VAT, or thin-instance evaluation.     |
+| V1 output     | The glTF structures this exporter writes. The test helper checks only these structures; it is not a full glTF validator. |
+| Coded error   | Lite's existing thrown-error convention, including its current message and decoding behavior.                            |
+
+## Public API Surface
 
 ```ts
 export function exportSceneGLB(scene: SceneContext): Promise<Blob>;
 ```
 
-- The function is a standalone named export from
-  `packages/babylon-lite/src/index.ts`, which remains the only package entry
-  point. No exporter type or method is public.
-- The signature accepts exactly one `SceneContext`. There is no options
-  object, overload, alternate container, engine parameter, device parameter,
-  raw WebGPU handle, or experimental/preview label.
-- The fulfilled value is a `Blob` whose type is exactly
-  `"model/gltf-binary"`.
-- The package function never creates an object URL, downloads a file, touches
-  the DOM, or exposes a download helper. Download behavior belongs only to the
-  separate lab demo.
-- Collection completes before serialization begins. The public wrapper does
-  not inspect `_kind`, perform a nominal runtime shape check, inspect
-  `_disposed`, register the scene, render a frame, or require an engine/device.
-- Source nodes, meshes, GPU wrappers, and CPU arrays are never mutated,
-  disposed, or given exporter state. Reading an existing lazy interleaved CPU
-  getter may populate that getter's own de-strided cache. Failures throw Lite's
-  existing coded error form and never return a partial Blob.
+- This is the only public function. It is a standalone named export from
+  `packages/babylon-lite/src/index.ts`, and the package keeps one root entry
+  point. No exporter type or method is public, and no package subpath export is
+  added.
+- The function accepts exactly one `SceneContext`. There is no options object,
+  overload, alternate container, node-array input, engine parameter, device
+  parameter, raw WebGPU handle, or experimental or preview label.
+- The fulfilled value is a `Blob` whose MIME type is exactly
+  `model/gltf-binary`.
+- The package function does not create an object URL, download a file, touch
+  the DOM, or expose download behavior. Downloading belongs to the lab demo.
+- It performs no runtime nominal or shape check of `SceneContext`, does not
+  inspect `_kind` or `_disposed`, does not require registration or rendering,
+  and does not require an engine or device.
+- Collection completes before serialization begins. The exporter does not
+  mutate, dispose, or attach exporter state to the source scene, nodes, meshes,
+  GPU wrappers, or CPU arrays. An existing lazy interleaved CPU getter may
+  materialize its own de-strided cache when read. That getter behavior is
+  allowed; the exporter adds no cache or state.
+- Missing data or another failure that prevents valid output throws Lite's
+  existing coded error form and never returns a partial `Blob`.
 
 ## Internal Architecture
 
-### Module layout
+All imports are static. The exporter modules perform no work at import time,
+register no features, mutate no globals, and create no module-level mutable
+cache.
 
-The production implementation is a static-imported, CPU-only module family.
-The following boundaries keep the public function small and keep all
-implementation types private:
+### Module layout
 
 ```text
 export-scene-glb.ts
@@ -74,102 +90,108 @@ export-scene-glb.ts
   -> glb-serializer.ts
 ```
 
-`export-scene-glb.ts` contains the public wrapper and no module-level work.
-`collect-gltf-scene.ts` owns graph selection, snapshots, topology checks, and
-geometry identity. `gltf-conversion.ts` owns the handedness and effective
-winding rules. `gltf-json.ts` contains private JSON shapes and numeric
-constants. `glb-serializer.ts` plans streams, writes little-endian bytes, and
-assembles the GLB. None of these modules creates a cache, registers a feature,
-mutates global state, or performs work at import time.
+| Module                  | Responsibility                                                                                                                            |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `export-scene-glb.ts`   | Public wrapper with the exact signature; calls collection, then serialization.                                                            |
+| `collect-gltf-scene.ts` | Mesh and ancestor selection, deterministic hierarchy, conversion root removal, snapshots, topology checks, and shared geometry detection. |
+| `gltf-conversion.ts`    | Handedness conversion, quaternion and matrix math, effective orientation, and triangle winding.                                           |
+| `gltf-json.ts`          | Private JSON interfaces and numeric constants for the v1 output.                                                                          |
+| `glb-serializer.ts`     | Buffer view and accessor layout, little-endian writes, JSON and BIN padding, and GLB assembly.                                            |
 
-### Scene closure and deterministic hierarchy
+### Mesh selection and node order
 
-Collection is defined as follows:
+Collection follows this algorithm:
 
-1. Copy the current `scene.meshes` array into a local seed array. Seed order is
+1. Copy the current `scene.meshes` array into a local seed array. Its order is
    part of deterministic output.
-2. For every seed, walk `parent` links while the parent satisfies the
-   `SceneNode` transform contract (`children`, `position`,
-   `rotationQuaternion`, and `scaling`) and mark every node on that chain
-   selected. A light, camera, or foreign `IWorldMatrixProvider` is not selected
-   or emitted. The selected child below it becomes an exported root and
-   snapshots its current `worldMatrix` as a matrix transform so omitted
-   ancestors do not change its placement. The graph is otherwise assumed to be
-   a well-formed tree or forest. Cycles and contradictory
-   `parent`/`children` links have undefined behavior; no graph repair or general
-   validation pass is added.
-3. The first-seen top-level roots are retained in root order. A root is
-   traversed recursively in its live `children` array order, filtering out
-   children not in the selected set. This produces node indices. A selected
-   node is emitted once, even when several mesh seeds share it.
-4. A selected mesh node receives one `CollectedGltfMesh` and therefore one
-   glTF mesh and one primitive. A transform-only selected node receives a glTF
-   node with no `mesh` property. Mesh wrappers are never collapsed into their
-   transform parent.
-5. `document.scenes[0].nodes` contains exactly the emitted root indices. Every
-   emitted node is reachable by following `children` from the default scene.
-   No unrelated empty, unindexed, or unattached node is added.
+2. For each seed, select the seed itself, then follow `parent` links while the
+   parent is a `SceneNode` (the node has the `children`, `position`,
+   `rotationQuaternion`, and `scaling` transform contract). Select every node
+   on each chain.
+3. Stop before a non-`SceneNode` world matrix provider, such as a light,
+   camera, or foreign `IWorldMatrixProvider`. Do not emit that provider. The
+   selected child below it becomes an exported root and stores its current
+   `worldMatrix` as a matrix transform, preserving placement without exporting
+   the provider's semantics.
+4. Identify selected roots in first-seen order. Recursively visit each root in
+   its live `children` array order, ignoring children outside the selected set.
+   Assign node indices during this ordered traversal. Emit each selected node
+   once, even when several mesh seeds share it.
+5. A selected mesh node receives one `CollectedGltfMesh`, one glTF `mesh`, and
+   one `primitive`. A transform-only selected node receives a glTF node without
+   a `mesh` property. Mesh wrappers remain separate nodes and are never
+   collapsed into their transform parent.
+6. `document.scenes[0].nodes` contains exactly the emitted root indices. Every
+   emitted node is reachable from the default scene through `children`.
+7. Omit unrelated empty, unindexed, or unattached nodes. V1 exports the scene's
+   mesh graph, not every object ever created.
 
-The collector uses identity maps only for lookup and duplicate prevention. It
-never iterates a `Map`, `Set`, or `WeakMap` to decide output order. Mesh,
-geometry-job, accessor, and buffer-stream indices are assigned by first
-encounter in the ordered node walk.
+The graph may be assumed to be a well-formed tree or forest. Cycles and
+contradictory `parent` and `children` links have undefined behavior; collection
+does not repair them or add a general graph-validation pass.
 
-`visible`, `metadata`, material state, render order, lights, cameras,
-animation groups, and scene registration state do not affect selection or
-output. Metadata and visibility changes therefore produce neither output nor
-warnings.
+Identity maps are lookup and duplicate-prevention tables only. No `Map`, `Set`,
+or `WeakMap` is iterated to choose output order. Mesh, geometry, accessor,
+buffer view, and node indices are assigned by first encounter in the ordered
+traversal.
 
-### Structural no-op coordinate root normalization
+`visible`, `metadata`, material state, render order, lights, cameras, animation
+groups, and scene registration state do not affect selection or output.
+Metadata and visibility therefore produce no output and no warnings.
 
-Lite's loader creates a synthetic root with the same handedness matrix used by
-the Babylon.js loader:
+### Removing loader coordinate conversion roots
+
+Lite's loader uses the following handedness matrix for its synthetic root:
 
 ```text
 C = diag(-1, 1, 1, 1)
 ```
 
-`C` is represented in column-major order as:
+Its column-major representation is:
 
 ```ts
 const COORDINATE_CONVERSION_ROOT = [-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] as const;
 ```
 
-For each selected graph root, the collector performs the Babylon.js-equivalent
-structural test:
+Remove a selected root only when all of these conditions hold:
 
-- the root is transform-only and has no `_gpu` property;
-- its live `parent` is `null` (an exported root created by omitting a
-  non-`SceneNode` parent is never treated as a loader conversion root);
-- its current `worldMatrix` has all 16 elements within `0.001` of the
-  corresponding element of `C` (the Babylon.js `Epsilon` tolerance); and
-- the test does not inspect the root name.
+- It is transform-only and has no `_gpu` property.
+- Its live `parent` is `null`.
+- Its current `worldMatrix` is within `0.001` of every corresponding element
+  of `C` (the Babylon.js `Epsilon` tolerance).
+- Its name is not considered.
 
-Only a root satisfying all of those conditions is removed. Its selected
-children are promoted in their original child order. A root named
-`"__root__"` that fails the structural test remains; an arbitrarily named root
-that passes is removed. A mesh wrapper can never pass because it has `_gpu`,
-even if its transform happens to equal `C`.
+The test checks structure and matrix values, never the name. A root named
+`"__root__"` that fails the test remains. An arbitrarily named root that passes
+is removed. A mesh wrapper cannot pass because it has `_gpu`, even if its
+transform equals `C`. A selected root below an omitted non-`SceneNode` parent
+cannot pass because its live `parent` is not `null`.
 
-Each ordinary root and its descendants receive
-`coordinateMode: "lh-to-rh"` and `rootState: "ordinary"`. Every child promoted
-from a removed root and every selected descendant receives
-`coordinateMode: "already-rh"` and `rootState: "promoted-noop"`. The removed
-root's `C` transform is not emitted and is not applied a second time to
-promoted vertex data or transforms. `rootState` is inherited by the complete
-promoted subtree so every geometry job receives the Babylon.js no-op-root
-orientation compensation.
+When a root passes:
 
-### Private collected types and invariants
+1. Remove the root from the output.
+2. Promote its selected children in their original child order.
+3. Do not serialize the root's `C` or apply it a second time.
+4. Mark the complete promoted subtree as `coordinateMode: "already-rh"` and
+   `conversionRootRemoved: true`.
 
-These types are file-private implementation contracts. They are not exported
-from the package root or any package subpath.
+Every other selected root and its descendants use
+`coordinateMode: "lh-to-rh"` and `conversionRootRemoved: false`. Promoted
+children already use the glTF right-handed basis, so their positions, normals,
+and transforms are not converted a second time. The
+`conversionRootRemoved` flag tells the winding code to apply Babylon.js's
+removed root adjustment throughout the promoted subtree.
+
+### Data passed to serialization
+
+The collector returns these private types. None is exported from the package
+root or from a package subpath.
 
 ```ts
 type GltfCoordinateMode = "lh-to-rh" | "already-rh";
-type GltfRootState = "ordinary" | "promoted-noop";
 type GltfWindingMode = "preserve" | "reverse";
 type GltfIndexComponentType = 5123 | 5125; // UNSIGNED_SHORT | UNSIGNED_INT
+
 type GltfVec3 = readonly [number, number, number];
 type GltfQuat = readonly [number, number, number, number];
 type GltfMat4 = readonly [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
@@ -194,17 +216,17 @@ interface CollectedGltfNode {
     readonly children: readonly number[];
     readonly meshIndex?: number;
     readonly coordinateMode: GltfCoordinateMode;
-    readonly rootState: GltfRootState;
+    readonly conversionRootRemoved: boolean;
 }
 
 interface CollectedGltfMesh {
     readonly nodeIndex: number;
     readonly name: string;
-    readonly geometryJobIndex: number;
+    readonly geometryIndex: number;
 }
 
 interface CollectedGltfGeometrySource {
-    readonly identity: object; // the source mesh._gpu object, never dereferenced
+    readonly identity: object; // the source mesh._gpu object; never dereferenced
     readonly positions: Float32Array;
     readonly normals: Float32Array;
     readonly indices: Uint32Array;
@@ -214,7 +236,7 @@ interface CollectedGltfGeometrySource {
     readonly maxIndex: number;
 }
 
-interface CollectedGltfGeometryJob {
+interface CollectedGltfGeometry {
     readonly source: CollectedGltfGeometrySource;
     readonly coordinateMode: GltfCoordinateMode;
     readonly windingMode: GltfWindingMode;
@@ -225,191 +247,202 @@ interface CollectedGltfScene {
     readonly nodes: readonly CollectedGltfNode[];
     readonly roots: readonly number[];
     readonly meshes: readonly CollectedGltfMesh[];
-    readonly geometryJobs: readonly CollectedGltfGeometryJob[];
+    readonly geometries: readonly CollectedGltfGeometry[];
 }
 
 function collectSceneForGltf(scene: SceneContext): CollectedGltfScene;
 function serializeGlb(data: CollectedGltfScene): Promise<Blob>;
 ```
 
-The invariants are:
+The representation has these invariants:
 
-- `nodes[i].children` contains only valid node indices, in source child order.
-  `nodes[i].meshIndex`, when present, points to one `meshes` entry, and that
-  entry's `nodeIndex` is `i`.
-- `meshes` is in node-walk order. Each entry is emitted exactly once even if
-  its geometry job is shared. `geometryJobIndex` is valid and points to a job
-  whose source arrays are suitable for that mesh by the existing live-mesh
-  sharing contract.
-- `geometryJobs` is in first-use order. The collector uses a nested lookup,
-  `Map<object, Map<`${GltfCoordinateMode}:${GltfWindingMode}`, number>>`, keyed
-  first by the shared `mesh._gpu` wrapper identity and then by both
-  output-affecting modes. It never creates a fresh composite object as a `Map`
-  key. Equal-looking arrays on different `_gpu` objects never deduplicate.
-  There is no byte comparison, hash, or content-based sharing.
-- `indexComponentType` is decided once during collection from the source
-  vertex count and maximum index. It is not recomputed from a later array or
-  from a copied view.
-- The collected object contains no `SceneContext`, no live `children` arrays,
-  no live transform objects, and no references to materials. The opaque
-  `_gpu` identity is retained only as an `object` key and is never dereferenced
-  by serialization.
-- Node names, local transforms, root state, authored winding signs, topology,
-  and array references are observed during collection. The
-  serializer never re-reads live node state.
+- `nodes[i].children` contains valid node indices in source child order. When
+  `nodes[i].meshIndex` is present, it points to one `meshes` entry whose
+  `nodeIndex` is `i`.
+- `meshes` is in ordered-traversal order. Each selected mesh node appears once,
+  even when its geometry is shared. `geometryIndex` points to a suitable
+  geometry record.
+- `geometries` is ordered by first use. Lookup is nested as
+  ``Map<object, Map<`${GltfCoordinateMode}:${GltfWindingMode}`, number>>``,
+  first by the shared `_gpu` wrapper identity and then by the coordinate and
+  winding modes, both of which change the output. The collector never iterates
+  this map, creates a composite object key, hashes arrays, or compares bytes.
+  Equal arrays on different `_gpu` objects never share.
+- `indexComponentType` is selected once from the retained vertex count and
+  maximum index. It is not recomputed from a later array or copied view.
+- The collected scene contains no `SceneContext`, live `children` arrays, live
+  transform objects, or material references. The opaque `_gpu` identity is kept
+  only as an object key and is never dereferenced by serialization.
+- Node names, local transforms, conversion root status, authored winding signs,
+  topology, and array references are read during collection. Serialization
+  never rereads live node state.
 
-### Snapshot and CPU-array lifetime
+### Scene snapshot and CPU array lifetime
 
-The collector reads the current local state synchronously:
+The collector reads current local state synchronously:
 
-- If `_localMatrix` is present, it copies all 16 scalar values into a
-  `CollectedGltfMatrix`. Otherwise it reads the current observable position,
-  quaternion, and scale and copies those scalar values into a
-  `CollectedGltfTrs`. The sole exception is an exported root whose live parent
-  is an omitted non-`SceneNode` provider: that root snapshots its current
-  `worldMatrix` into `CollectedGltfMatrix`.
-- The collector reads each required `mesh._cpuPositions`,
-  `mesh._cpuNormals`, and `mesh._cpuIndices` reference directly. It reads
-  `mesh._cpuUvs` directly when present and non-empty. The direct references are
-  intentionally retained in `CollectedGltfGeometrySource`.
-- Accessing a lazy interleaved getter is allowed to materialize the existing
-  tight CPU array and then retains that returned reference. The exporter does
-  not call `getMeshGeometry`, because that helper copies arrays and would erase
-  the live `_gpu`-identity sharing relationship. Populating `il._cpu` through
-  that existing getter is the sole permitted cache mutation and is not counted
-  as exporter state.
-- The exporter allocates converted output arrays only during serialization.
-  It never writes to any retained source array, including when reversing
-  indices. The only possible cache write is the existing lazy interleaved
-  getter's materialization; no exporter state is attached.
-- Collection snapshots `scene.meshes`, node relationships, transforms, root
-  state, names, and authored winding signs before returning. The collected object
-  retains the references needed until `serializeGlb` has copied every source
-  value into its output bytes. V1 serialization performs all source reads
-  before yielding; its Promise return reserves the asynchronous contract for
-  future formats/resources.
-  External mutation of a retained CPU array while an export is pending is
-  outside the contract; the exporter itself leaves the array byte-for-byte
-  unchanged before and after the returned promise settles.
+- If `_localMatrix` is present, copy all 16 scalar values into
+  `CollectedGltfMatrix`.
+- Otherwise copy the observable position, quaternion, and scale into
+  `CollectedGltfTrs`.
+- If a selected root is below an omitted non-`SceneNode` provider, copy its
+  current `worldMatrix` into `CollectedGltfMatrix` instead of preserving a
+  local transform whose parent will not be emitted.
 
-### Geometry policy and identity deduplication
+For geometry, retain direct references to `mesh._cpuPositions`,
+`mesh._cpuNormals`, and `mesh._cpuIndices`, and retain `mesh._cpuUvs` only when
+the reference exists and is non-empty. The collector does not call
+`getMeshGeometry`: copying through that helper would lose the `_gpu` identity
+used for explicit sharing.
 
-For every selected mesh:
+Reading an existing lazy interleaved geometry getter may materialize its tight,
+de-strided CPU array, after which the returned reference is retained. Populating
+`il._cpu` through that getter is existing mesh behavior and is not exporter
+state. No exporter property is attached to the scene or mesh.
+
+Serialization allocates converted position, normal, UV, and index arrays only
+after collection. It never writes to a retained source array, including while
+reversing indices. Collection records the current graph, transforms, names,
+conversion root status, topology, and authored winding signs before it returns,
+while the retained arrays stay available until serialization has copied their
+values into the GLB bytes. V1 performs all source reads before yielding; the
+asynchronous return preserves the contract needed for future formats or
+resources.
+
+The exporter itself leaves referenced CPU arrays byte-for-byte unchanged before
+and after the promise settles. External mutation of a retained array while an
+export is pending is outside the contract. A caller may mutate the scene after
+collection; such changes do not alter the collected graph or copied transforms.
+
+### Geometry and sharing
+
+For each selected mesh:
 
 - Positions, normals, and indices are required retained CPU data. A missing
-  required array throws an existing coded error naming the mesh. UV0 is
-  optional and is emitted only when the direct `_cpuUvs` reference exists and
-  is non-empty. The glTF loader zero-fills and retains UV0 when a source
-  primitive omitted it; that array is current live geometry and is emitted.
-  V1 does not attempt to recover source-level UV absence. UV2, tangents,
-  colors, joints, weights, and all other attributes are ignored.
-- `mesh._topology === undefined` means the current triangle-list topology.
-  Any current non-triangle marker (point list, line list, line strip, or
-  triangle strip) throws an existing coded error; no topology is recovered.
-- Skeleton, morph-target, VAT, and thin-instance state does not change the
-  geometry job. V1 exports the retained base arrays once; it does not bake
-  deformation or expand instances.
-- `vertexCount` is the retained position vertex count and `maxIndex` is the
-  maximum value observed while scanning the retained index array. This scan is
-  solely for index component selection. The collector does not audit attribute
-  lengths, finite values, or index bounds.
-- `UNSIGNED_SHORT` (`5123`) is selected only when
-  `vertexCount <= 65535` and `maxIndex < 65535`. The strict maximum excludes
-  the 16-bit primitive-restart sentinel. Otherwise `UNSIGNED_INT` (`5125`) is
-  selected. V1 never emits signed indices, quantizes, welds, re-indexes, or
-  changes vertex order.
-- One `CollectedGltfGeometryJob` is reused by every mesh whose `_gpu` identity,
-  coordinate mode, and final winding mode are equal. Reuse means the glTF
-  primitives reference the same accessor indices; each mesh still receives
-  its own glTF mesh object and primitive.
+  required array throws an existing coded error naming the mesh.
+- UV0 is optional. Emit `TEXCOORD_0` only when the current `_cpuUvs` reference
+  exists and is non-empty. The loader creates a zero-filled UV array when a
+  source primitive omits UV0. If that array is still on the mesh, export it:
+  v1 writes the mesh's current data, not the original file structure.
+- Use the current topology. `mesh._topology === undefined` represents the
+  triangle-list case. A current non-triangle marker (point list, line list, line
+  strip, or triangle strip) throws an existing coded error. The exporter does
+  not reconstruct topology discarded by loading.
+- A mesh with skeleton, morph-target, VAT, or thin-instance state exports its
+  retained base geometry only. It does not bake deformation or expand
+  instances.
+- Ignore tangents, UV2, vertex colors, joints, weights, and every other
+  attribute outside the v1 contract. These omissions do not produce warnings.
+- Preserve retained values apart from the selected handedness and winding
+  conversion. Do not quantize, weld, re-index, or change vertex order.
+
+`vertexCount` is the retained position vertex count. `maxIndex` is the maximum
+value observed while scanning the retained index array; this scan chooses an
+index component type only. Collection does not audit attribute lengths,
+finite values, or index bounds.
+
+Use unsigned index components with these exact boundaries:
+
+| Condition                                         |  Accessor `componentType` |
+| ------------------------------------------------- | ------------------------: |
+| `vertexCount <= 65535` **and** `maxIndex < 65535` | `5123` (`UNSIGNED_SHORT`) |
+| `maxIndex >= 65535` or `vertexCount >= 65536`     |   `5125` (`UNSIGNED_INT`) |
+
+The strict `< 65535` test excludes the 16-bit primitive-restart sentinel
+`0xffff`. Thus max index `65534` with 65535 vertices uses `UNSIGNED_SHORT`;
+max index `65535`, or 65536 vertices, uses `UNSIGNED_INT`.
+
+Reuse one `CollectedGltfGeometry` only when the source `mesh._gpu` identity,
+`coordinateMode`, and final winding mode all match. A shared `mesh._gpu`
+identity is the explicit signal that meshes use the same geometry data. Reuse
+means that primitives reference the same accessor indices. Each source mesh
+still receives its own glTF `mesh` object and one `primitive`.
 
 ### Handedness, transforms, normals, and winding
 
-`C` is its own inverse. It is used both for Lite's loader RH-to-LH root and for
-the exporter LH-to-RH conversion:
+`C = diag(-1, 1, 1, 1)` is its own inverse. It is used for the Lite loader's
+coordinate root and for the LH-to-RH exporter path.
 
-```text
-C = diag(-1, 1, 1, 1)
-```
+#### LH-to-RH path: `coordinateMode: "lh-to-rh"`
 
-For an ordinary `"lh-to-rh"` subtree:
-
-- A position and a normal become `C * v`, which is exactly
-  `(-x, y, z)`. Normals are not regenerated, normalized, or inverse-transpose
-  transformed; this is the orthogonal coordinate-basis change used by the
-  current Babylon.js exporter.
+- Positions and normals become `C * v`, exactly `(-x, y, z)`. Normals are not
+  regenerated, normalized, or inverse-transpose transformed; this is the
+  orthogonal basis change used by the current Babylon.js exporter.
 - A TRS translation becomes `(-tx, ty, tz)`. Scale components, including
-  negative and non-uniform values, are preserved. A quaternion first becomes
-  the basis-equivalent `(qx, -qy, -qz, qw)`. To choose the same deterministic
-  global sign as Babylon.js `ConvertToRightHandedRotation`, select X or Y when
-  `qx*qx + qy*qy > 0.5`: choose X only when `abs(qx) > abs(qy)`, otherwise
-  choose Y. Otherwise choose Z only when `abs(qz) > abs(qw)`, otherwise choose
-  W. Negate all four converted components when the selected converted
-  component is negative, then normalize before emission. The strict `>` rules
-  mean ties choose Y or W, matching Babylon.js.
-- A matrix node is not decomposed. Its emitted matrix is exactly
-  `C * localMatrix * C` in column-major order. This preserves negative scales,
-  shear, and any matrix state that cannot be represented faithfully as TRS.
+  negative and non-uniform values, are preserved.
+- A quaternion first becomes `(qx, -qy, -qz, qw)`. Apply Babylon.js's
+  deterministic canonical sign algorithm to those converted components:
 
-For an `"already-rh"` subtree promoted from a sniffed root, local transforms,
-positions, and normals are emitted without a second conversion. The removed
-root's `C` is not serialized. An already-RH quaternion is normalized before
-emission but keeps its source global sign; no converted-path canonicalization
-is applied.
+    ```text
+    if qx*qx + qy*qy > 0.5:
+        choose X when abs(qx) > abs(qy), otherwise choose Y
+    else:
+        choose Z when abs(qz) > abs(qw), otherwise choose W
 
-Triangle orientation follows Lite's established mirrored-mesh convention and
-then the Babylon.js no-op-root compensation. `_authoredSign` is never used to
-recognize a root or infer loader provenance. It is only an input to effective
-orientation:
+    if the chosen converted component is negative:
+        negate all four converted components
+
+    normalize the resulting quaternion before emission
+    ```
+
+    The strict `>` comparisons mean ties choose Y and W.
+
+- Do not decompose a matrix node. Emit
+  `C * localMatrix * C` in column-major order. This preserves negative scale,
+  shear, and matrix state that cannot be represented faithfully as TRS.
+
+#### Already-RH path: `coordinateMode: "already-rh"`
+
+A child promoted from a removed conversion root already uses the glTF
+right-handed basis. Emit its local transforms, positions, and normals without a
+second conversion. Normalize its quaternion before emission but preserve its
+source global sign; do not apply converted-path canonicalization. The removed
+root's `C` is neither serialized nor applied again.
+
+#### Effective orientation and index order
+
+`_authoredSign` is the retained geometry's base winding state, the same baseline
+used by Lite's `enableMirroredMeshes`. It never identifies a root and never
+selects the coordinate conversion path:
 
 ```text
 authoredSign = mesh._authoredSign ?? 1
 baseOrientation = authoredSign < 0 ? "cw" : "ccw"
 
-if (node.rootState == "promoted-noop") {
-    // BJS ExporterState.wasAddedByNoopNode compensation in a Lite LH scene.
+if node.conversionRootRemoved:
+    // Babylon.js compensation for a removed conversion root in a Lite LH scene.
     baseOrientation = toggle(baseOrientation)
-}
 
 windingMode = baseOrientation == "cw" ? "reverse" : "preserve"
 ```
 
-`windingMode: "reverse"` swaps the second and third index of every complete
-triangle before packing. `"preserve"` copies index order. The output has no
-material or `doubleSided` flag, so this final index decision is what preserves
-front-face visibility in a standard glTF viewer. `_authoredSign` is the
-retained geometry's winding baseline: `+1` maps to the ordinary Lite
-counter-clockwise exporter orientation and `-1` maps to the loader-authored
-clockwise orientation. It is the same baseline consumed by
-`enableMirroredMeshes`, but the exporter does not call `isMirrored`: glTF
-retains the node transform, and the glTF determinant rule carries negative
-scale parity without another index toggle.
+`"reverse"` swaps the second and third index of every complete triangle before
+packing. `"preserve"` copies the index order. There is no material or
+`doubleSided` flag, so this final index choice preserves front-face visibility
+in a standard glTF viewer.
 
-The complete direct truth table is:
+The four required rows are:
 
-| Root state    | `_authoredSign` | base orientation | no-op compensation | final orientation | index action |
-| ------------- | --------------: | ---------------- | -----------------: | ----------------- | ------------ |
-| ordinary      |            `+1` | ccw              |                 no | ccw               | preserve     |
-| ordinary      |            `-1` | cw               |                 no | cw                | reverse      |
-| promoted-noop |            `+1` | ccw              |                yes | cw                | reverse      |
-| promoted-noop |            `-1` | cw               |                yes | ccw               | preserve     |
+| Coordinate path | Conversion root removed | `_authoredSign` | Base orientation | Final orientation | Index action |
+| --------------- | ----------------------: | --------------: | ---------------- | ----------------- | ------------ |
+| LH to RH        |                      no |            `+1` | ccw              | ccw               | preserve     |
+| LH to RH        |                      no |            `-1` | cw               | cw                | reverse      |
+| Already RH      |                     yes |            `+1` | ccw              | cw                | reverse      |
+| Already RH      |                     yes |            `-1` | cw               | ccw               | preserve     |
 
-Positive- and negative-determinant node transforms use the same table row and
-therefore the same index action. This is the direct equivalent of
-Babylon.js `_exportIndices` using the mesh/material base `sideOrientation`,
-then toggling it when
-`wasAddedByNoopNode && !scene.useRightHandedSystem`; Babylon.js does not feed
-the runtime determinant-adjusted draw orientation into `_exportIndices`.
-Tests must exercise every row with both determinant signs, including
-procedural and loader-authored baselines, reparenting, and negative scale.
-This explicit algorithm prevents `_authoredSign` from becoming a false root
-detector while preserving the Lite convention it was designed to encode.
+Positive- and negative-determinant node transforms use the same row and the same
+index action. The live determinant remains represented by the emitted node
+transform; it does not independently reverse indices. This matches Babylon.js
+`_exportIndices`, which starts with the base `sideOrientation` from the mesh or
+material and toggles it for
+`wasAddedByNoopNode && !scene.useRightHandedSystem`, rather than feeding runtime
+determinant-adjusted draw orientation into index export.
+The exporter does not call `isMirrored`; glTF retains the node transform, so
+that transform carries negative-scale parity.
 
-### Private glTF JSON subset
+### Private glTF JSON model
 
-The serializer writes only these private JSON shapes. Optional fields are
-omitted when their values are defaults or when the corresponding capability is
-not present.
+The writer uses these private interfaces:
 
 ```ts
 interface GltfAssetJson {
@@ -478,7 +511,7 @@ interface GltfDocumentJson {
 }
 ```
 
-An empty export is:
+An empty export has exactly this JSON object:
 
 ```json
 {
@@ -489,63 +522,67 @@ An empty export is:
 ```
 
 It has no `nodes`, `meshes`, `buffers`, `bufferViews`, or `accessors`
-properties. A geometry export adds exactly the structures needed for the
-reachable nodes, one mesh and primitive per source mesh, one URI-less buffer,
-the buffer views, and the accessors. It emits no materials, textures, images,
-samplers, cameras, lights, animations, skins, morph targets, metadata,
-`extras`, extensions, `extensionsUsed`, `extensionsRequired`, tangents, UV2,
-colors, joints, weights, or instance expansion. The primitive omits `mode`
-because triangle-list is the glTF default and omits `material` because v1 is
-material-free.
+properties. A geometry export adds only the structures needed for reachable
+nodes: one glTF mesh and one primitive per source mesh, one URI-less buffer,
+buffer views, and accessors. It emits no `materials`, `textures`, `images`,
+`samplers`, `cameras`, `lights`, `animations`, `skins`, morph targets,
+metadata, `extras`, extensions, `extensionsUsed`, `extensionsRequired`,
+tangents, UV2, colors, joints, weights, or instance expansion. It also emits
+no `.gltf` plus `.bin`, external URI, Draco data, or other format. The primitive
+omits `mode` because triangle-list is the glTF default and omits `material`
+because v1 is material-free.
 
-Node names are copied when non-empty. A mesh node's non-empty name is copied to
-both its node and its one glTF mesh. `children`, `mesh`, and transform fields
-are omitted when absent. Identity TRS values are omitted; a matrix is omitted
-only when the emitted matrix is exactly identity. No default-value omission
-uses an epsilon other than the explicitly specified no-op-root test.
+Naming and omission rules:
 
-### Buffer planning and exact packing
+- Copy a node or mesh name only when it is non-empty.
+- For a mesh node with a non-empty name, copy the name to both the glTF node
+  and its one glTF mesh.
+- Omit `children`, `mesh`, and transform fields when they are absent.
+- Omit identity TRS values. Omit a matrix only when the emitted matrix is
+  exactly identity.
+- Do not use an epsilon for default omission; the only tolerance in this
+  contract is the `0.001` conversion root test.
+- The default scene is always `scene: 0` with one `scenes` entry.
 
-There is one logical BIN buffer for a geometry export. For each unique geometry
-job, the planner emits streams in this order:
+### Buffer views, accessors, and binary packing
 
-1. converted positions (`FLOAT`, `VEC3`);
-2. converted normals (`FLOAT`, `VEC3`);
-3. converted UV0 when present (`FLOAT`, `VEC2`);
-4. final triangle indices (`UNSIGNED_SHORT` or `UNSIGNED_INT`, `SCALAR`).
+A geometry export stores one glTF buffer in the BIN chunk. For each unique
+geometry, write one buffer view and accessor for each item, in this order:
 
-Each stream has one tightly packed buffer view and one accessor. An accessor
-reference is reused for every primitive that reuses the same geometry job.
-There is no interleaving. Stream starts are aligned to the component size:
+1. Converted positions (`FLOAT`, `VEC3`).
+2. Converted normals (`FLOAT`, `VEC3`).
+3. UV0 when present (`FLOAT`, `VEC2`).
+4. Final triangle indices (`UNSIGNED_SHORT` or `UNSIGNED_INT`, `SCALAR`).
 
-| Component        | glTF value | Byte size | Alignment |
-| ---------------- | ---------: | --------: | --------: |
-| `FLOAT`          |     `5126` |         4 |         4 |
-| `UNSIGNED_SHORT` |     `5123` |         2 |         2 |
-| `UNSIGNED_INT`   |     `5125` |         4 |         4 |
+Each buffer view is tightly packed. A primitive that reuses geometry also
+reuses its accessor references. Attributes are not interleaved. Align each
+buffer view start to its component size:
 
-The next stream offset is `align(cursor, componentSize)`. The alignment rule
-is component-aware and is not a universal four-byte rule. A buffer view's
-`byteOffset` is omitted at zero; its accessor's `byteOffset` is omitted because
-each stream starts at the beginning of its view. Attribute views use target
-`34962`; the index view uses `34963`.
+| Component        | glTF value | Byte size | Required alignment |
+| ---------------- | ---------: | --------: | -----------------: |
+| `FLOAT`          |     `5126` |         4 |                  4 |
+| `UNSIGNED_SHORT` |     `5123` |         2 |                  2 |
+| `UNSIGNED_INT`   |     `5125` |         4 |                  4 |
 
-Position `min` and `max` are computed from the converted position values, in
-the order `[x, y, z]`. Normals and UVs do not receive bounds. Counts are
-`vertexCount` for positions/normals/UV0 and `indexCount` for indices. The
-serializer does not reject non-finite values or out-of-range indices; the
-emitted-subset test helper checks valid fixtures and catches those conditions
-in tests.
+The next buffer view offset is `align(cursor, componentSize)`. Omit a
+`bufferView.byteOffset` at zero. Each accessor starts at the beginning of its
+buffer view, so omit its `byteOffset`. Attribute buffer views use target
+`34962`; the index buffer view uses `34963`.
 
-Every scalar is written explicitly little-endian with `DataView` operations
-(`setFloat32`, `setUint16`, and `setUint32` with `littleEndian: true`).
-Header/chunk integers use the same explicit little-endian rule. The
-implementation does not depend on host typed-array byte order and never packs
-by mutating the retained source arrays.
+Compute position `min` and `max` from converted position values in `[x, y, z]`
+order. Normals and UV0 have no bounds. Position, normal, and UV counts equal
+`vertexCount`; the index count equals `indexCount`. The serializer does not
+reject non-finite values or out-of-range indices; the focused test helper
+checks those conditions for valid fixtures.
+
+Write every scalar explicitly with `DataView` operations:
+`setFloat32`, `setUint16`, and `setUint32`, each with `littleEndian: true`.
+Header and chunk integers use the same explicit little-endian rule. Do not
+depend on host typed-array byte order or mutate retained source arrays.
 
 ### Exact GLB framing
 
-The writer uses these constants:
+Use these constants:
 
 ```ts
 const GLB_MAGIC = 0x46546c67; // "glTF"
@@ -556,11 +593,12 @@ const JSON_SPACE = 0x20;
 const BIN_ZERO = 0x00;
 ```
 
-The JSON object is serialized deterministically with compact
-`JSON.stringify`, encoded with `TextEncoder`, and padded to a multiple of four
-bytes with ASCII spaces. A geometry BIN payload is padded to a multiple of
-four bytes with zero bytes. Chunk lengths include their padding. The 12-byte
-header is:
+Serialize the JSON object with compact, deterministic `JSON.stringify`, encode
+it with `TextEncoder`, and pad it to a multiple of four bytes with ASCII
+spaces. Pad a geometry BIN payload to a multiple of four bytes with zero bytes.
+Chunk lengths include their padding.
+
+The 12-byte GLB header is:
 
 ```text
 uint32 magic       = 0x46546c67
@@ -568,26 +606,37 @@ uint32 version     = 2
 uint32 totalLength = Blob byte length
 ```
 
-An empty export contains the header followed by one JSON chunk and no BIN
-chunk. A geometry export contains the header, one JSON chunk, then one BIN
-chunk. `buffer.byteLength` describes the logical BIN data, including any
-component-alignment gaps but excluding final BIN padding. Consequently it may
-be smaller than the BIN chunk payload by zero to three bytes. The GLB total
-length includes both chunk headers and all JSON/BIN padding.
+The two legal layouts are:
 
-The fulfilled object is `new Blob([bytes], { type: "model/gltf-binary" })`.
-No URI is written into the one buffer, and no sidecar file is produced.
+```text
+empty scene:    header + JSON chunk
+with geometry:  header + JSON chunk + BIN chunk
+```
+
+An empty export has no BIN chunk. A geometry export has one BIN chunk and one
+URI-less buffer. `buffer.byteLength` is the unpadded buffer length. It includes
+component-alignment gaps but excludes final BIN padding, so it may be zero to
+three bytes smaller than the padded BIN chunk payload. The GLB total length
+includes both chunk headers and all JSON and BIN padding.
+
+Return:
+
+```ts
+new Blob([bytes], { type: "model/gltf-binary" });
+```
+
+No URI is written into the buffer, and no sidecar file is produced.
 
 ## Pipeline Configuration
 
-None. The exporter has no WebGPU render or compute pipeline, no shader module,
-no bind group, no GPU buffer upload, no device access, and no readback path.
-It is ordinary CPU code and is tree-shaken when `exportSceneGLB` is not
-referenced.
+None. This feature has no WebGPU render or compute pipeline, shader module,
+bind group, GPU buffer upload, device access, or readback path. It is CPU-only
+code. When `exportSceneGLB` is not referenced, the static root re-export and
+exporter modules are removed by tree-shaking.
 
 ## Shader Logic
 
-None. There is no WGSL in this feature. The CPU conversion kernel is:
+None. The exporter contains no WGSL. Its CPU conversion is:
 
 ```text
 for each vertex (x, y, z):
@@ -601,86 +650,102 @@ for each vertex (x, y, z):
 copy UV0 without coordinate conversion
 
 for each index triple (a, b, c):
-    write (a, c, b) when windingMode == "reverse"
-    otherwise write (a, b, c)
+    if windingMode == "reverse":
+        write (a, c, b)
+    else:
+        write (a, b, c)
 ```
 
-The kernel writes newly allocated output storage only. It does not normalize
-normals, infer topology, expand instances, or inspect materials.
+The conversion writes newly allocated output storage. It does not normalize
+normals, infer topology, expand instances, or inspect materials. Quaternion and
+matrix conversion follows the exact rules in Internal Architecture.
 
 ## State Machine / Lifecycle
 
-1. **Entry** - `exportSceneGLB` statically calls the synchronous collector.
-   There is no input nominal check and no disposal check.
-2. **Collecting** - The seed array, ancestor closure, root candidates, names,
-   local/root-world transforms, visibility-independent hierarchy, topology
-   markers, geometry references, authored signs, and deterministic indices are
-   captured. Missing required CPU data or a current non-triangle topology
-   throws a coded error before serialization starts.
-3. **Collected** - The private `CollectedGltfScene` is self-contained. It has
-   no live scene graph references. Direct CPU-array references remain alive for
-   the serializer; no source array is written.
-4. **Serializing** - `serializeGlb` allocates converted vertex/index arrays,
-   determines stream offsets, writes JSON and logical BIN data, and adds GLB
-   padding. Geometry is serialized entirely from the collected snapshot.
-5. **Fulfilled** - The promise resolves to the typed GLB Blob. All output bytes
-   have been copied, so no source array is retained for asynchronous work.
-6. **Rejected** - Any failure that prevents a valid Blob is a coded thrown
-   error. There is no partial Blob, warning result, warning logger, retry, or
-   disposal action.
+```mermaid
+stateDiagram-v2
+    [*] --> Collecting
+    Collecting --> Collected
+    Collected --> Serializing
+    Serializing --> Fulfilled
+    Collecting --> Rejected
+    Serializing --> Rejected
+```
 
-Repeated calls on unchanged scene state produce byte-identical JSON ordering,
-node/reference indices, stream ordering, and GLB bytes. A later caller may
-mutate the scene after collection; that mutation does not alter the already
-collected graph or transforms. Concurrent mutation of retained CPU arrays is
-not a promised snapshot mode.
+1. **Entry** — `exportSceneGLB` statically calls the synchronous collector. It
+   performs no nominal-input or disposal check.
+2. **Collecting** — Copy the mesh seed order, select each mesh and its
+   `SceneNode` ancestors, remove eligible conversion roots, copy names and
+   transforms, record visibility-independent hierarchy, inspect topology,
+   retain CPU references, calculate authored orientation, and assign
+   deterministic indices. Missing required CPU data or a current non-triangle
+   topology throws before serialization starts.
+3. **Collected** — `CollectedGltfScene` is self-contained and has no live scene
+   graph references. Direct CPU array references remain available for the
+   serializer; no source array is written.
+4. **Serializing** — `serializeGlb` allocates converted arrays, determines
+   buffer view offsets, builds JSON and the unpadded BIN payload, adds GLB
+   padding, and assembles the final bytes entirely from the collected values.
+5. **Fulfilled** — Resolve the promise with the typed GLB `Blob`. All output
+   bytes have been copied, so no source array is retained for asynchronous work.
+6. **Rejected** — Any failure that prevents a valid Blob throws an existing
+   coded error. There is no partial Blob, warning collection, warning logger,
+   retry, or disposal action. The listed failures are examples, not an
+   exhaustive or capped list.
+
+Repeated exports of unchanged state produce byte-identical JSON property order,
+node and reference indices, buffer view order, padding, and GLB bytes. A caller
+may mutate the scene after collection without changing the collected graph or
+copied transforms. Concurrent external mutation of retained CPU arrays while
+serialization is pending is not covered; the exporter still never writes those
+arrays.
 
 ## Babylon.js Equivalence Map
 
-The current Babylon.js glTF exporter is the behavioral golden for every
-ambiguous conversion, root, orientation, and framing decision. Lite
-re-expresses the behavior with its plain-data contracts and does not copy
-Babylon.js code.
+The current Babylon.js glTF exporter is the behavioral reference for ambiguous
+conversion, quaternion sign, conversion root removal, orientation compensation,
+position bounds, and framing decisions. Lite expresses the same behavior with
+plain-data contracts and does not copy Babylon.js code.
 
-| Babylon.js core behavior                                    | Upstream conceptual location                                                                                                                              | Lite contract                                                                                                                                                                                                                                                                                     |
-| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Async GLB orchestration (`GLBAsync` and `generateGLBAsync`) | `GLTF2Export.GLBAsync` in `glTFSerializer.ts` and `GLTFExporter.generateGLBAsync` in `glTFExporter.ts`                                                    | One public `exportSceneGLB` seam, synchronous collection, asynchronous `serializeGlb`, and one Blob.                                                                                                                                                                                              |
-| Exporter state and identity reuse                           | `ExporterState` in `glTFExporter.ts`                                                                                                                      | `CollectedGltfScene`, ordered arrays, and a lookup-only identity map keyed by `_gpu` plus coordinate/winding mode. No map iteration determines output.                                                                                                                                            |
-| No-op conversion-root recognition                           | `IsNoopNode` in `packages/dev/serializers/src/exportUtils.ts`                                                                                             | Structural transform-only/no-`_gpu` test against `C` with `0.001` tolerance. Names do not participate.                                                                                                                                                                                            |
-| No-op-root removal and promoted-child state                 | `removeNoopRootNodes` handling in `_exportSceneAsync`, including `wasAddedByNoopNode`                                                                     | Remove only a passing graph root, promote selected children, assign `"already-rh"`, retain wrappers, and apply the explicit orientation compensation.                                                                                                                                             |
-| Node transform conversion                                   | `_setNodeTransformation`, `ConvertToRightHandedPosition`, `ConvertToRightHandedRotation`, and `ConvertToRightHandedTransformMatrix` in `glTFUtilities.ts` | Negate X for translations/attributes, conjugate matrices with `C`, convert quaternions by the equivalent basis change, and preserve scale including negative components. Ordinary hierarchy nodes stay local; only a selected root below an omitted non-`SceneNode` parent snapshots world space. |
-| Attribute conversion and position bounds                    | `_exportBuffers`, `_exportVertexBuffer`, `GetMinMax`, and `GetAccessorType`                                                                               | CPU positions/normals are converted in newly allocated arrays, UV0 is optional and unchanged, position min/max use converted values, and only the v1 attributes are typed.                                                                                                                        |
-| Effective orientation and index export                      | `_getEffectiveOrientation` and `_exportIndices` in `glTFExporter.ts`                                                                                      | Map Lite `_authoredSign ?? 1` to Babylon.js's base side orientation, toggle for a removed no-op root, and reverse complete triangle triples exactly according to the truth table. Negative determinant remains represented by the exported node transform.                                        |
-| Buffer planning and binary writes                           | `BufferManager.createBufferView`, `createAccessor`, `generateBinary`, and `DataWriter`                                                                    | One logical buffer, one tightly packed stream view/accessor per unique job, component-size alignment, explicit little-endian writes, and JSON/BIN padding rules.                                                                                                                                  |
-| Exporter extensions                                         | `IGLTFExporterExtensionV2`, material/texture/camera/light/animation/skin/morph exporters, and all `KHR_*`/`EXT_*` exporter modules                        | Grouped deferred work. V1 emits no extension declarations or extension payload, and contains no extension-specific branch.                                                                                                                                                                        |
+| Babylon.js behavior                                      | Conceptual reference                                                                                                                                      | Babylon Lite contract                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mesh ancestors and node preservation                     | Babylon.js exporter scene and node traversal                                                                                                              | Select every mesh in `scene.meshes` and its `SceneNode` ancestors, preserve selected hierarchy and wrappers, omit unrelated nodes, and make every output node reachable from the default scene.                                                                                                |
+| Async GLB orchestration (`GLBAsync`, `generateGLBAsync`) | `GLTF2Export.GLBAsync` in `glTFSerializer.ts`; `GLTFExporter.generateGLBAsync` in `glTFExporter.ts`                                                       | One `exportSceneGLB` function, synchronous collection, asynchronous `serializeGlb`, and one `Blob`.                                                                                                                                                                                            |
+| Exporter state and shared geometry                       | `ExporterState` in `glTFExporter.ts`                                                                                                                      | Private `CollectedGltfScene`, ordered arrays, and an identity map keyed by `_gpu` plus coordinate and winding mode. The map is used only for lookup; iteration never defines output order.                                                                                                     |
+| Conversion root recognition                              | `IsNoopNode` in `packages/dev/serializers/src/exportUtils.ts`                                                                                             | Transform-only root with no `_gpu` and `parent === null`, compared with `C` using `0.001` tolerance; names do not participate.                                                                                                                                                                 |
+| Conversion root removal and promoted children            | `removeNoopRootNodes` in `_exportSceneAsync`, including `wasAddedByNoopNode`                                                                              | Remove only a passing graph root, promote selected children, assign `"already-rh"`, retain wrappers, and apply the explicit orientation compensation.                                                                                                                                          |
+| Node transform conversion                                | `_setNodeTransformation`, `ConvertToRightHandedPosition`, `ConvertToRightHandedRotation`, and `ConvertToRightHandedTransformMatrix` in `glTFUtilities.ts` | Negate X on the LH-to-RH path, conjugate matrices with `C`, apply the equivalent quaternion basis and sign rules, and preserve scale including negative components. Hierarchy nodes keep local transforms; only a selected root below an omitted non-`SceneNode` parent snapshots world space. |
+| Attribute conversion and bounds                          | `_exportBuffers`, `_exportVertexBuffer`, `GetMinMax`, and `GetAccessorType`                                                                               | Convert CPU positions and normals into new arrays, leave UV0 unchanged, compute position bounds after conversion, and type only the v1 attributes.                                                                                                                                             |
+| Effective orientation and index export                   | `_getEffectiveOrientation` and `_exportIndices` in `glTFExporter.ts`                                                                                      | Map `_authoredSign ?? 1` to the base side orientation, toggle for a removed conversion root, and reverse complete triangle triples according to the four-row table. Negative determinant remains in the node transform.                                                                        |
+| Buffer layout and binary writes                          | `BufferManager.createBufferView`, `createAccessor`, `generateBinary`, and `DataWriter`                                                                    | One buffer in the BIN chunk, one tightly packed buffer view and accessor per geometry attribute or index set, component-size alignment, explicit little-endian writes, and JSON and BIN padding.                                                                                               |
+| Empty output and v1 omissions                            | Babylon.js GLB generation and exporter feature registration                                                                                               | Emit one JSON chunk for an empty scene, one JSON plus one BIN chunk for geometry, and no v1-omitted structures or extension declarations. Lite uses its own MIME and empty-BIN rule below.                                                                                                     |
+| Exporter extensions                                      | `IGLTFExporterExtensionV2`; material, texture, camera, light, animation, skin, and morph exporters; and `KHR_*` and `EXT_*` exporter modules              | Grouped deferred work. V1 emits no extension declaration or payload and has no extension-specific branch.                                                                                                                                                                                      |
 
-Babylon.js behavior therefore resolves the conversion direction, quaternion
-basis/sign behavior, no-op-root promotion, effective-orientation toggle, and
-position-bounds timing. Lite deliberately differs in two container details:
+Two container details intentionally differ from the current Babylon.js output:
 Babylon.js currently includes an empty BIN chunk and uses
-`application/octet-stream`; Lite follows the GLB recommendation to omit an
-empty BIN chunk and returns `model/gltf-binary`. Lite also narrows the payload
-to the emitted subset rather than pretending to implement the upstream
-material, animation, camera, skin, morph, or extension surface.
+`application/octet-stream`; Lite omits an empty BIN chunk and returns
+`model/gltf-binary`. Lite also limits JSON to the v1 structures described above
+rather than claiming the upstream material, animation, camera, skin, morph, or
+extension surface.
 
 ## Dependencies
 
 Production dependencies are static and minimal:
 
-- `SceneContext` type from `scene/scene-core.ts`;
-- `Mesh` and its retained CPU fields / opaque `_gpu` identity from
-  `mesh/mesh.ts`;
-- `SceneNode` and `_localMatrix`/TRS contracts from `scene/scene-node.ts`;
-- `mat4Compose` and `mat4Multiply` (or equivalent existing math helpers) for
-  local snapshots and matrix conjugation;
-- `VERSION` from `engine/version.ts` for the exact generator string
-  `Babylon Lite v${VERSION}`;
-- the existing coded-error rewrite convention used by Lite's
-  `throw new Error(...)` call sites; no new error or warning framework;
-- standard platform `Blob`, `TextEncoder`, `DataView`, and typed arrays.
+- `SceneContext` type from `scene/scene-core.ts`.
+- `Mesh` and its retained CPU fields plus opaque `_gpu` identity from
+  `mesh/mesh.ts`.
+- `SceneNode` and its `_localMatrix` and TRS contracts from
+  `scene/scene-node.ts`.
+- Existing `mat4Compose` and `mat4Multiply` (or equivalent math helpers) for
+  transform snapshots and matrix conjugation.
+- `VERSION` from `engine/version.ts` for `Babylon Lite v${VERSION}`.
+- Lite's existing coded-error convention used by current `throw new Error(...)`
+  call sites; no new error or warning framework.
+- Platform `Blob`, `TextEncoder`, `DataView`, and typed arrays.
 
 The exporter does not import an engine, loader feature registry, material,
-resource, WebGPU, DOM, download, validator, or `getMeshGeometry` module. It
+resource, WebGPU, DOM, download, validator, or `getMeshGeometry` module. V1
 adds no runtime, development, peer, or test dependency. The only package
 integration is this static root re-export:
 
@@ -689,192 +754,199 @@ export { exportSceneGLB } from "./export-gltf/export-scene-glb.js";
 ```
 
 No package subpath export, dynamic import, module-level mutable cache, import
-registration, or core scene/mesh/loader/material behavior is added.
+registration, or exporter-specific behavior is added to core scene, mesh,
+loader, resource, or material modules.
 
 ## Test Specification
 
-### Production test seam and emitted-subset helper
+### Production test boundary and GLB assertion helper
 
-Every production test calls only `exportSceneGLB(scene)` and observes either
-the returned `Blob` bytes/type or a thrown coded error. Tests do not import or
-assert `CollectedGltfScene`, `CollectedGltfGeometryJob`, `serializeGlb`, or
-any other private shape.
+Every production test calls only `exportSceneGLB(scene)` and observes the
+returned `Blob` bytes and MIME type or a thrown coded error. Tests do not import
+or assert `CollectedGltfScene`, `CollectedGltfGeometry`, `serializeGlb`, or any
+other private type.
 
-`tests/lite/unit/gltf-exporter-subset.ts` is a hand-written parser/assertion
-helper, not a full glTF validator. Given public Blob bytes, it must assert:
+`tests/lite/unit/gltf-exporter-subset.ts` is a hand-written parser and
+assertion helper for the v1 output. It is not a full glTF validator, and no
+validator dependency is added. It must check:
 
-- GLB magic, version, total length, chunk order, little-endian integers, JSON
-  chunk UTF-8 decoding, JSON space padding, BIN zero padding, and chunk
-  lengths including padding;
-- empty JSON-only output has exactly `asset`, `scene`, and `scenes`, has no BIN
-  chunk, and has no buffers, bufferViews, or accessors;
-- geometry output has exactly one URI-less buffer, exactly one JSON chunk and
-  one BIN chunk, `buffer.byteLength` equal to logical BIN bytes, and logical
-  length no more than three bytes below padded BIN length;
-- all node, mesh, primitive, accessor, bufferView, and scene references are in
-  range and reachable from the default scene; no emitted node is orphaned;
-- names, parent/child reachability, transform representations, one mesh and
-  one primitive per source Mesh, and no material/extension/omitted-content
-  declarations;
-- attributes are exactly POSITION/NORMAL and optional TEXCOORD_0; positions
-  and normals are FLOAT VEC3, UV0 is FLOAT VEC2, indices are unsigned SCALAR,
-  counts match the fixture, and accessor/bufferView offsets obey component
-  alignment;
-- decoded position `min`/`max` equals the converted values and every fixture
-  triangle index is within the fixture's vertex range;
-- shared geometry uses the same accessor references, while equal bytes on
+- GLB magic, version, total length, chunk order, little-endian integers, UTF-8
+  JSON decoding, JSON space padding, BIN zero padding, and padded chunk lengths.
+- Empty JSON-only output has exactly `asset`, `scene`, and `scenes`, has no BIN
+  chunk, and has no `buffers`, `bufferViews`, or `accessors`.
+- Geometry output has exactly one URI-less buffer, one JSON chunk, one BIN
+  chunk, `buffer.byteLength` equal to the unpadded buffer length, and a length
+  no more than three bytes below the padded BIN payload.
+- Node, mesh, primitive, accessor, buffer view, and scene references are in
+  range and reachable from the default scene; no emitted node is orphaned.
+- Names, parent and child reachability, transform representations, one mesh and one
+  primitive per source mesh, and the absence of material, extension, and other
+  omitted-content declarations.
+- Attributes are exactly `POSITION`, `NORMAL`, and optional `TEXCOORD_0`.
+  Positions and normals are `FLOAT` `VEC3`; UV0 is `FLOAT` `VEC2`; indices are
+  unsigned `SCALAR`. Counts match the fixture, and accessor and buffer view
+  offsets obey component alignment.
+- Decoded position `min` and `max` equal converted values, and every fixture
+  triangle index is within its fixture's vertex range.
+- Shared geometry uses the same accessor references, while equal arrays on
   different `_gpu` identities do not share.
 
-The helper deliberately does not claim general glTF conformance and adds no
-validator dependency.
+The helper intentionally does not claim general glTF conformance.
 
-### Direct public-Blob cases
+### Direct `exportSceneGLB` cases
 
-`tests/lite/unit/gltf-exporter.test.ts` must cover, through the public seam:
+`tests/lite/unit/gltf-exporter.test.ts` covers all of these through the public
+function:
 
-1. An empty scene: JSON-only GLB, empty default scene, MIME, generator/version,
-   and no binary structures.
-2. An asymmetric procedural triangle with no UV: ordinary LH-to-RH position
-   and normal X conversion, transformed node values, exact indices, position
-   bounds, and omission of TEXCOORD_0.
-3. The same geometry with UV0: FLOAT VEC2 values and the exact attribute set.
-   A loaded primitive that omitted UV0 but retains the loader's zero-filled
-   array emits those zeros, documenting current-state rather than source-state
-   semantics.
-4. Transform-only ancestors, names, child order, mesh wrappers, and omission
-   of unrelated empty/unindexed nodes. Set visibility false and attach
-   metadata; assert no output or warning behavior changes.
-5. A mesh whose nearest selected `SceneNode` ancestor is parented to a light or
-   camera: omit the semantic parent and emit the selected child as a matrix
-   root with its current world placement.
-6. A transform-only root whose name is not `"__root__"` and whose world matrix
-   is `C`: root removal, child promotion, unchanged already-RH child
-   transform/attributes, and preserved wrapper node.
-7. A root named `"__root__"` that is not structurally `C`: root remains and
-   receives ordinary LH-to-RH conversion. This is the direct name-independence
-   test.
-8. All four rows of the winding truth table above, each under positive- and
-   negative-determinant node transforms. Cover `_authoredSign` `+1` and `-1`,
-   ordinary and promoted roots, reparenting, and negative scales. Assert index
-   order and decoded face visibility, not only that export succeeds.
-9. Shared `_gpu` identity with equal coordinate/winding modes: two glTF mesh
-   objects but one set of attribute/index accessors. Use separate `_gpu`
-   identities containing byte-identical arrays to prove no byte-comparison
-   deduplication. Use the same identity with a different conversion or final
-   winding mode to prove a separate job.
-10. Index selection at the exact boundaries: max index `65534` with 65535
-    vertices uses `UNSIGNED_SHORT`; max index `65535` or 65536 vertices uses
-    `UNSIGNED_INT`; no primitive-restart sentinel is accepted for the short
-    path.
-11. A current `_topology` marker for a non-triangle mesh throws a coded error.
-    Missing positions, normals, or indices throws a coded error naming the
-    affected mesh. No partial Blob and no warning collection/logger exist.
-12. Skeleton, morph, VAT, and thin-instance fields present: base geometry only,
-    no extra attributes, no skin/morph/extension JSON, and no instance
-    expansion.
-13. Repeated export of unchanged state yields byte-identical Blobs. Copy all
-    retained arrays before export and compare them after fulfillment; no source
-    graph, transform, or CPU array is changed. A first read may populate an
-    existing interleaved de-stride cache, which is explicitly exempt.
+1. **Empty scene.** Assert a JSON-only GLB, empty default scene, MIME,
+   generator and version, and no binary structures.
+2. **Asymmetric procedural triangle without UV.** Assert LH-to-RH
+   position and normal X conversion, transformed node values, exact indices,
+   position bounds, and omission of `TEXCOORD_0`.
+3. **Same geometry with UV0.** Assert `FLOAT` `VEC2` values and the exact
+   attribute set. A loaded primitive that omitted UV0 but retains the loader's
+   zero-filled array emits those zeros, proving that export uses the UV array
+   currently stored on the mesh rather than whether the source glTF contained
+   `TEXCOORD_0`.
+4. **Hierarchy and selection.** Assert transform-only ancestors, names, child
+   order, mesh wrappers, and omission of unrelated empty or unindexed nodes. Set
+   visibility false and attach metadata; assert that neither output nor warning
+   behavior changes.
+5. **Omitted non-`SceneNode` parent.** Parent the nearest selected
+   `SceneNode` ancestor to a light or camera. Omit the semantic parent and emit
+   the selected child as a matrix root using its current world placement.
+6. **Arbitrarily named conversion root.** Use a transform-only root whose
+   name is not `"__root__"` and whose world matrix is `C`. Assert root removal,
+   child promotion, unchanged already-RH child transforms and attributes, and the
+   preserved mesh wrapper.
+7. **Name is not root detection.** Use a root named `"__root__"` whose matrix
+   is not structurally `C`. Assert that the root remains and receives
+   LH-to-RH conversion.
+8. **All four winding rows.** Exercise every row of the truth table with both
+   positive- and negative-determinant node transforms. Cover `_authoredSign`
+   `+1` and `-1`, procedural and loader-authored baselines, roots that remain,
+   children promoted from a removed conversion root, reparenting, and negative
+   scales. Assert index order and decoded face visibility, not only successful
+   export.
+9. **Shared identity and modes.** Give two meshes the same `_gpu` identity and
+   equal coordinate and winding modes; assert two glTF mesh objects but one set of
+   attribute and index accessors. Give separate `_gpu` identities byte-identical
+   arrays to prove there is no byte-comparison deduplication. Reuse one identity
+   with a different conversion or final winding mode to prove a separate
+   geometry record.
+10. **Index boundaries.** Max index `65534` with 65535 vertices uses
+    `UNSIGNED_SHORT`; max index `65535` or 65536 vertices uses `UNSIGNED_INT`.
+    The short path accepts no primitive-restart sentinel.
+11. **Coded failures.** A current `_topology` marker for a non-triangle mesh
+    throws an existing coded error. Missing positions, normals, or indices
+    throws a coded error naming the affected mesh. Assert no partial Blob and
+    no warning collection or logger.
+12. **Unsupported mesh state.** With skeleton, morph, VAT, and thin-instance
+    fields present, assert base geometry only: no extra attributes, skin or morph
+    or extension JSON, and no instance expansion.
+13. **Determinism and source lifetime.** Repeated export of unchanged state
+    yields byte-identical Blobs. Copy retained arrays before export and compare
+    them after fulfillment; assert no source graph, transform, or CPU array
+    changes. A first read may populate an existing interleaved de-stride cache,
+    which is the stated exception.
 
-The tests must not add a runtime nominal-input or disposal-flag assertion as a
-production requirement. A disposed flag, when a valid retained mesh remains
-exportable, is not inspected by the public entry point.
+The tests must not turn a runtime nominal-input or disposal-flag check into a
+production requirement. A disposed flag is not inspected when valid retained
+mesh data remains exportable.
 
-### Re-import smoke
+### Exactly one re-import smoke
 
-Exactly one focused plumbing test,
-`tests/lite/plumbing/gltf-exporter-reimport.spec.ts`, creates a small live
-scene, calls the public Blob seam, awaits the Blob, passes that Blob to
-`loadGltf(engine, blob)`, and verifies that the returned asset loads and has
-the expected reachable mesh hierarchy. This is only a loadability smoke
-signal; it is not a source-preserving round-trip promise.
+`tests/lite/plumbing/gltf-exporter-reimport.spec.ts` is the only re-import
+smoke. It creates a small live scene, calls `exportSceneGLB`, awaits the Blob,
+passes it to `loadGltf(engine, blob)`, and verifies that the returned asset
+loads with the expected reachable mesh hierarchy. This is a loadability smoke
+signal, not a source-preserving round-trip promise.
 
 ### Combined numbered parity scene
 
-The current next free numbered scene is `scene283`. It is one combined scene,
-not a collection of separate parity fixtures. It contains:
+The next free numbered scene is `scene283`. It is one combined scene, not a
+set of separate parity fixtures. It contains:
 
-- visibly asymmetric triangle/box geometry so X reflection and winding errors
+- visibly asymmetric triangles and boxes so X reflection and winding errors
   cannot hide;
-- an ordinary LH root with a positive-scale parent;
+- an LH root with a positive-scale parent;
 - a second branch with a negative-scale parent;
 - a quaternion-driven transform hierarchy;
-- a transform-only, arbitrarily named root with world matrix `C`, containing
-  a mesh wrapper so the sniffed-root/already-RH path is exercised;
-- a direct `exportSceneGLB` call, followed by re-import of the Blob into the
-  Lite display scene before the screenshot.
+- a transform-only, arbitrarily named root with world matrix `C`, containing a
+  mesh wrapper and exercising the promoted already-RH path;
+- a direct `exportSceneGLB` call followed by re-import of the Blob into the Lite
+  display scene before the screenshot.
 
-The planned BJS reference page builds the equivalent source hierarchy and uses
-the current Babylon.js GLB exporter once to create the one-time reference
-golden. The planned Lite page builds the independently written equivalent,
-calls the public Lite exporter, re-imports its Blob, and renders only the
-re-imported result. The Babylon.js page is not opened by runtime parity tests;
-the BJS golden is captured once and then immutable. No upstream playground
-source or image is copied.
+The planned Babylon.js page builds the equivalent source hierarchy and uses the
+current Babylon.js GLB exporter once to create the one-time reference golden.
+The planned Lite page independently builds the equivalent, calls the Lite
+exporter, re-imports its Blob, and renders only the re-imported result. Runtime
+parity never opens the Babylon.js page. The golden is captured once and then
+immutable; no upstream playground source or image is copied.
 
 The parity spec uses the existing focused scene harness and its approved MAD
-threshold. It does not change an existing golden, threshold, bundle ceiling,
-or unrelated per-scene manifest. Local implementation validation remains
-focused; CI owns the full parity and scene suite.
+threshold. It does not change an existing golden, threshold, bundle ceiling, or
+unrelated per-scene manifest. Local implementation validation remains focused;
+CI owns the full parity and scene suite.
 
 ### Separate download demo and manual viewer gate
 
-`demo-gltf-exporter` is separate from `scene283`. Its lab-only TypeScript calls
-the public Blob seam, displays byte length/MIME and a small JSON summary, and
-uses DOM download behavior only in that demo. It has its own catalog entry in
-`demos-config.json`, a `demo-gltf-exporter.jpg` thumbnail, and a generated
+`demo-gltf-exporter` is separate from `scene283`. The lab demo calls the public
+function, displays the byte length, MIME type, and a small JSON summary, and
+handles the DOM download. It has its own `demos-config.json` catalog entry,
+`demo-gltf-exporter.jpg` thumbnail, and generated
 `lab/public/bundle/demos-manifest.json` entry with raw and gzip measurements.
-The demo does not add download code to the package.
+The package contains no download code.
 
 One manual gate records whether a downloaded Blob opens without modification in
-an independent external glTF viewer. The judgment is separate from the
-emitted-subset helper and is not presented as structural conformance proof.
+an independent external glTF viewer. This is a human judgment separate from
+the GLB assertion helper and is not presented as conformance proof.
 
 ### Focused validation and CI boundary
 
-Implementation validation may run the focused exporter unit/plumbing tests,
-the focused re-import smoke, TypeScript/lint checks for changed source, a
-tree-shaking check proving an unused consumer pays no exporter runtime bytes,
-and filtered scene/demo bundle measurements. The filtered scene283 build must
-produce `lab/public/bundle/manifest/scene283.json`; its measured raw runtime
-bytes establish a new additive `maxRawKB` ceiling in `scene-config.json`, which
-must be explicitly approved before commit. Existing ceilings are not changed.
-Implementation validation must not run `pnpm test`, full `pnpm test:parity`,
-an unfiltered scene bundle, or performance tests. Visual parity, full scene
-coverage, and the final MAD gate remain CI/user checks. No unrelated manifest
-is regenerated.
+Implementation work may run focused exporter unit and plumbing tests, the single
+re-import smoke, TypeScript and lint checks for changed source, a tree-shaking
+check proving an unused consumer pays no exporter runtime bytes, and filtered
+scene and demo bundle measurements. The filtered `scene283` build must produce
+`lab/public/bundle/manifest/scene283.json`; its measured raw runtime bytes
+establish a new additive `maxRawKB` ceiling in `scene-config.json`, which needs
+explicit approval before commit. Existing ceilings, thresholds, goldens, and
+unrelated manifests stay unchanged.
+
+Do not run `pnpm test`, full `pnpm test:parity`, an unfiltered scene bundle, or
+performance tests. Visual parity, full scene coverage, and the final MAD gate
+remain CI and user checks. This documentation-only revision runs no code tests.
 
 ## File Manifest
 
-The following is the exact planned add/update manifest for implementation.
-This documentation-only change does not assert that any path below already
-exists or has been created.
+This is the exact inventory of files to add or update during implementation. This
+documentation-only change does not claim that any path below already exists or
+has been created.
 
-| Planned path                                                   | Role                                                                                                                     |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `packages/babylon-lite/src/export-gltf/export-scene-glb.ts`    | Public wrapper with the exact `exportSceneGLB` signature.                                                                |
-| `packages/babylon-lite/src/export-gltf/collect-gltf-scene.ts`  | Private synchronous closure, root normalization, snapshots, topology checks, and geometry identity jobs.                 |
-| `packages/babylon-lite/src/export-gltf/gltf-conversion.ts`     | Private `C` conversion, quaternion/matrix conversion, authored orientation, no-op compensation, and index winding.       |
-| `packages/babylon-lite/src/export-gltf/gltf-json.ts`           | Private emitted-subset JSON interfaces and GLB/component constants.                                                      |
-| `packages/babylon-lite/src/export-gltf/glb-serializer.ts`      | Private stream planner, little-endian writer, JSON/BIN padding, and Blob assembly.                                       |
-| `packages/babylon-lite/src/index.ts`                           | One static tree-shakable root re-export; no package subpath.                                                             |
-| `tests/lite/unit/gltf-exporter-subset.ts`                      | Public-Blob emitted-subset parser/assertion helper, explicitly not a full validator.                                     |
-| `tests/lite/unit/gltf-exporter.test.ts`                        | Focused public seam Blob, determinism, geometry, root, winding, errors, and omission tests.                              |
-| `tests/lite/plumbing/gltf-exporter-reimport.spec.ts`           | The single re-import smoke test.                                                                                         |
-| `lab/lite/src/bjs/scene283.ts`                                 | Independently authored Babylon.js source for the combined parity scene.                                                  |
-| `lab/lite/src/lite/scene283.ts`                                | Independently authored Lite source exercising both root states and the public Blob seam.                                 |
-| `lab/lite/babylon-ref-scene283.html`                           | One-time Babylon.js golden capture page.                                                                                 |
-| `lab/lite/scene283.html`                                       | Lite runtime parity page.                                                                                                |
-| `lab/lite/bundle-scene283.html`                                | Filtered Lite bundle-size entry for scene283.                                                                            |
-| `tests/lite/parity/scenes/scene283-gltf-exporter.spec.ts`      | Focused scene283 parity spec; runtime opens Lite only.                                                                   |
-| `scene-config.json`                                            | New scene283 catalog, MAD threshold, and explicitly approved additive `maxRawKB` ceiling; no existing threshold changes. |
-| `lab/public/bundle/manifest/scene283.json`                     | Filtered runtime-fetched bundle manifest for the new scene.                                                              |
-| `reference/lite/scene283-gltf-exporter/babylon-ref-golden.png` | Immutable one-time Babylon.js golden.                                                                                    |
-| `lab/public/thumbnails/scene283.jpg`                           | 1280x720 JPG scene thumbnail derived from the golden.                                                                    |
-| `lab/lite/demo-gltf-exporter.html`                             | Separate cataloged exporter/download demo page.                                                                          |
-| `lab/lite/src/demos/gltf-exporter.ts`                          | Demo-only Blob display and download interaction.                                                                         |
-| `demos-config.json`                                            | Separate `gltf-exporter` demo catalog entry.                                                                             |
-| `lab/public/thumbnails/demo-gltf-exporter.jpg`                 | Demo JPG thumbnail.                                                                                                      |
-| `lab/public/bundle/demos-manifest.json`                        | Generated demo raw/gzip measurement entry.                                                                               |
-| `docs/lite/architecture/53-gltf-exporter.md`                   | This one-shot architecture contract.                                                                                     |
+| Planned path                                                   | Role                                                                                                                                 |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `packages/babylon-lite/src/export-gltf/export-scene-glb.ts`    | Public wrapper with the exact `exportSceneGLB` signature.                                                                            |
+| `packages/babylon-lite/src/export-gltf/collect-gltf-scene.ts`  | Private synchronous mesh and ancestor selection, conversion root removal, snapshots, topology checks, and shared geometry detection. |
+| `packages/babylon-lite/src/export-gltf/gltf-conversion.ts`     | Private `C` conversion, quaternion and matrix conversion, authored orientation, removed root winding adjustment, and index winding.  |
+| `packages/babylon-lite/src/export-gltf/gltf-json.ts`           | Private JSON interfaces for supported GLB structures, GLB constants, and component type values.                                      |
+| `packages/babylon-lite/src/export-gltf/glb-serializer.ts`      | Private buffer view layout, little-endian writer, JSON and BIN padding, and Blob assembly.                                           |
+| `packages/babylon-lite/src/index.ts`                           | Tree-shakable export from the package root; no package subpath.                                                                      |
+| `tests/lite/unit/gltf-exporter-subset.ts`                      | Blob parser and assertion helper for the v1 output, explicitly not a full validator.                                                 |
+| `tests/lite/unit/gltf-exporter.test.ts`                        | Focused tests for the returned Blob, determinism, geometry, roots, winding, errors, and omissions.                                   |
+| `tests/lite/plumbing/gltf-exporter-reimport.spec.ts`           | The single re-import smoke test.                                                                                                     |
+| `lab/lite/src/bjs/scene283.ts`                                 | Independently authored Babylon.js source for the combined parity scene.                                                              |
+| `lab/lite/src/lite/scene283.ts`                                | Independently authored Lite source exercising both coordinate paths and the public function.                                         |
+| `lab/lite/babylon-ref-scene283.html`                           | One-time Babylon.js golden capture page.                                                                                             |
+| `lab/lite/scene283.html`                                       | Lite runtime parity page.                                                                                                            |
+| `lab/lite/bundle-scene283.html`                                | Filtered Lite bundle size entry for scene283.                                                                                        |
+| `tests/lite/parity/scenes/scene283-gltf-exporter.spec.ts`      | Focused scene283 parity spec; runtime opens Lite only.                                                                               |
+| `scene-config.json`                                            | New scene283 catalog, MAD threshold, and explicitly approved additive `maxRawKB` ceiling; no existing threshold changes.             |
+| `lab/public/bundle/manifest/scene283.json`                     | Filtered runtime-fetched bundle manifest for the new scene.                                                                          |
+| `reference/lite/scene283-gltf-exporter/babylon-ref-golden.png` | Immutable one-time Babylon.js golden.                                                                                                |
+| `lab/public/thumbnails/scene283.jpg`                           | 1280x720 JPG scene thumbnail derived from the golden.                                                                                |
+| `lab/lite/demo-gltf-exporter.html`                             | Separate cataloged export and download demo page.                                                                                    |
+| `lab/lite/src/demos/gltf-exporter.ts`                          | Lab code that displays and downloads the Blob.                                                                                       |
+| `demos-config.json`                                            | Separate `gltf-exporter` demo catalog entry.                                                                                         |
+| `lab/public/thumbnails/demo-gltf-exporter.jpg`                 | Demo JPG thumbnail.                                                                                                                  |
+| `lab/public/bundle/demos-manifest.json`                        | Generated demo raw and gzip measurement entry.                                                                                       |
+| `docs/lite/architecture/53-gltf-exporter.md`                   | This one-shot architecture contract.                                                                                                 |
