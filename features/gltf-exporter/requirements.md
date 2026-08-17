@@ -12,7 +12,8 @@ boundary, not a permanent claim about future exporters.
 
 ## 0. Terms and v1 boundary
 
-- **Selected node:** a live node in the ancestor closure of `scene.meshes`.
+- **Selected node:** a live `SceneNode` in the ancestor closure reached from
+  `scene.meshes` without crossing a non-`SceneNode` world-matrix provider.
 - **Included node:** a selected node that remains after the
   coordinate-conversion-root normalization in `REQ-SCENE-7`.
 - **Base geometry:** retained CPU positions, normals, indices, and optional UVs
@@ -43,6 +44,8 @@ boundary, not a permanent claim about future exporters.
 - **REQ-API-6** — The exporter MUST not mutate, dispose, or attach exporter
   state to the source scene, nodes, meshes, or CPU arrays. Referenced large
   CPU arrays MUST remain unmodified until the returned promise settles.
+  Reading an existing lazy interleaved CPU getter MAY populate its own
+  de-strided cache; that existing getter behavior is not exporter state.
 - **REQ-API-7** — Production MUST collect synchronously with the private
   `collectSceneForGltf(scene): CollectedGltfScene` phase, then serialize
   asynchronously with the private `serializeGlb(collected): Promise<Blob>`
@@ -52,13 +55,16 @@ boundary, not a permanent claim about future exporters.
 
 ## 2. Scene selection and hierarchy (`REQ-SCENE`)
 
-- **REQ-SCENE-1** — The selected graph MUST be exactly the ancestor closure of
-  `scene.meshes`: every scene mesh is a seed, and every live ancestor needed to
-  place a seed mesh is selected.
+- **REQ-SCENE-1** — The selected graph MUST be exactly the `SceneNode` ancestor
+  closure of `scene.meshes`: every scene mesh is a seed, and every live
+  `SceneNode` ancestor reached before a non-`SceneNode` provider is selected.
 - **REQ-SCENE-2** — Every included live node MUST be emitted exactly once.
   Transform-only ancestors MUST be retained except for the root normalization
   in `REQ-SCENE-7`; parent/child relationships and non-empty names MUST
-  otherwise be preserved.
+  otherwise be preserved. If a selected `SceneNode` is parented through an
+  out-of-scope non-`SceneNode` world-matrix provider (for example a light or
+  camera), that provider MUST NOT be emitted; the selected node becomes an
+  exported root using its current world matrix so its scene placement survives.
 - **REQ-SCENE-3** — Nodes unrelated to an exported mesh MUST be omitted,
   including empty or unindexed nodes. V1 exports the scene's mesh graph, not
   every unattached object ever created.
@@ -75,8 +81,9 @@ boundary, not a permanent claim about future exporters.
   ordinary included nodes. A selected graph root MUST instead be removed and
   its children promoted when it satisfies the Babylon.js exporter-equivalent
   no-op coordinate-conversion-root test: it is transform-only, carries no mesh
-  geometry, and its effective root transform is the Lite LH-to-glTF-RH
-  conversion matrix within the architecture contract's numeric tolerance.
+  geometry, has no live parent, and its effective root transform is the Lite
+  LH-to-glTF-RH conversion matrix within the architecture contract's numeric
+  tolerance.
   Recognition MUST be structural and mathematical, not name-based.
 - **REQ-SCENE-8** — Collection MUST read the current live node transforms and
   graph state synchronously. No registration, build, rendered frame, or prior
@@ -86,7 +93,10 @@ boundary, not a permanent claim about future exporters.
 
 - **REQ-GEOM-1** — Each exported mesh MUST use retained CPU base positions,
   normals, and indices. UVs are optional: `TEXCOORD_0` MUST be emitted only
-  when UVs exist. Missing required CPU data MUST fail with a coded error.
+  when the current mesh retains a non-empty CPU UV array. A loader-created
+  zero-filled UV array is current live geometry and MAY therefore be emitted
+  even when the source glTF omitted `TEXCOORD_0`. Missing required CPU data
+  MUST fail with a coded error.
 - **REQ-GEOM-2** — The exporter MUST use the mesh's current live topology.
   Triangle lists are the only supported topology. A mesh currently marked as
   non-triangle MUST be rejected with a coded error; the exporter MUST NOT
@@ -123,16 +133,19 @@ boundary, not a permanent claim about future exporters.
   receive a redundant per-vertex handedness conversion.
 - **REQ-HAND-2** — Within each conversion path, node transforms, vertex
   positions, vertex normals, and triangle winding MUST remain mutually
-  consistent. Removing a coordinate-conversion root MUST preserve the visible
-  transform and face orientation of its promoted descendants.
+  consistent. Every emitted quaternion MUST be normalized. Removing a
+  coordinate-conversion root MUST preserve the visible transform and face
+  orientation of its promoted descendants.
 - **REQ-HAND-3** — Negative scales are legal input. The emitted transform and
   matching winding MUST preserve the intended face orientation; negative scale
   MUST NOT be rejected merely because its determinant is negative.
 - **REQ-HAND-4** — Coordinate-conversion mode MUST be selected by the root test
-  in `REQ-SCENE-7`, not by a node name or `_authoredSign`. Effective triangle
-  winding MUST follow Lite's established mirrored-mesh rule: compare the
-  current world-determinant sign with `mesh._authoredSign ?? 1`, then apply the
-  Babylon.js-equivalent compensation when a no-op root was removed.
+  in `REQ-SCENE-7`, not by a node name or `_authoredSign`. The retained
+  geometry's base orientation MUST be derived from `mesh._authoredSign ?? 1`
+  (the same authored-winding baseline used by Lite's mirrored-mesh support),
+  then toggled by the Babylon.js-equivalent compensation when a no-op root was
+  removed. The current world-determinant sign MUST remain represented by the
+  emitted node transforms and MUST NOT independently toggle index order.
 - **REQ-HAND-5** — Handedness conversion and winding selection MUST be isolated
   in private code. Shared-geometry reuse MUST distinguish every output-affecting
   conversion and winding mode. When Lite and Babylon.js behavior is ambiguous,
@@ -150,7 +163,8 @@ boundary, not a permanent claim about future exporters.
   `buffers`, `bufferViews`, or `accessors` structures.
 - **REQ-GLB-4** — A geometry export MUST contain one JSON chunk followed by one
   BIN chunk. Its JSON MUST declare exactly one URI-less buffer whose
-  `byteLength` matches the BIN payload.
+  `byteLength` equals the unpadded logical BIN length. The padded BIN chunk
+  payload MAY be zero to three bytes longer.
 - **REQ-GLB-5** — Chunk lengths MUST equal their padded payload lengths. JSON
   padding MUST use spaces and binary padding MUST use zero bytes, with valid
   UTF-8 JSON and GLB chunk framing.
@@ -216,8 +230,9 @@ boundary, not a permanent claim about future exporters.
   They MUST cover empty JSON-only output, geometry JSON-plus-one-BIN output,
   hierarchy, transforms, names, optional UVs, index widths, component
   alignment, root sniffing and promotion, ordinary-LH and already-RH conversion
-  states, mirrored winding cases, shared-identity deduplication, deterministic
-  bytes, MIME, and omitted v1 constructs.
+  states, authored-winding/root-compensation cases, negative-scale transforms,
+  shared-identity deduplication, deterministic bytes, MIME, and omitted v1
+  constructs.
 - **REQ-TEST-3** — Exactly one re-import smoke test MUST export a live scene,
   await the Blob, re-import it, and verify that the resulting asset loads.
   It is a smoke signal, not a promise of source-preserving round trips.
@@ -267,67 +282,67 @@ boundary, not a permanent claim about future exporters.
 
 ## 10. Out of scope for v1
 
-| Omitted capability | V1 disposition |
-| --- | --- |
-| Materials, textures, images, samplers | Not emitted; no warning system |
-| Cameras, lights, animations | Not emitted; no warning system |
-| Skins, morph targets, VAT, thin-instance expansion | Base geometry only; no baking or expansion |
-| Metadata and glTF extras | Not emitted; ignored |
-| Tangents, second UV sets, vertex colors, joints, weights | Not emitted; optional UV0 remains supported |
-| glTF extensions | No extension output; deferred as a grouped future area |
-| `.gltf` plus `.bin`, external URIs, Draco, or other formats | Not produced |
-| GPU readback and runtime disposal/nominal checks | Not performed |
-| Download behavior in the package | Kept in the separate lab demo |
-| General graph repair or general mesh validity auditing | Not performed; Lite state is assumed well formed |
+| Omitted capability                                          | V1 disposition                                         |
+| ----------------------------------------------------------- | ------------------------------------------------------ |
+| Materials, textures, images, samplers                       | Not emitted; no warning system                         |
+| Cameras, lights, animations                                 | Not emitted; no warning system                         |
+| Skins, morph targets, VAT, thin-instance expansion          | Base geometry only; no baking or expansion             |
+| Metadata and glTF extras                                    | Not emitted; ignored                                   |
+| Tangents, second UV sets, vertex colors, joints, weights    | Not emitted; optional UV0 remains supported            |
+| glTF extensions                                             | No extension output; deferred as a grouped future area |
+| `.gltf` plus `.bin`, external URIs, Draco, or other formats | Not produced                                           |
+| GPU readback and runtime disposal/nominal checks            | Not performed                                          |
+| Download behavior in the package                            | Kept in the separate lab demo                          |
+| General graph repair or general mesh validity auditing      | Not performed; Lite state is assumed well formed       |
 
 ## 11. Acceptance criteria summary
 
-| Requirement IDs | Acceptance evidence |
-| --- | --- |
-| REQ-API-1..REQ-API-5 | Public type test and a Blob returned by the exact root function; MIME, no options, no side effect, and no alternate input are observable |
-| REQ-API-6..REQ-API-8 | Public-seam immutability/lifetime checks plus static-import and source inspection |
-| REQ-SCENE-1..REQ-SCENE-4 | Parsed Blob JSON proves ancestor closure, one-to-one nodes, names, deterministic order, and default-scene reachability |
+| Requirement IDs          | Acceptance evidence                                                                                                                                               |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| REQ-API-1..REQ-API-5     | Public type test and a Blob returned by the exact root function; MIME, no options, no side effect, and no alternate input are observable                          |
+| REQ-API-6..REQ-API-8     | Public-seam immutability/lifetime checks plus static-import and source inspection                                                                                 |
+| REQ-SCENE-1..REQ-SCENE-4 | Parsed Blob JSON proves ancestor closure, one-to-one nodes, names, deterministic order, and default-scene reachability                                            |
 | REQ-SCENE-5..REQ-SCENE-8 | Public-seam fixtures prove ignored visibility/metadata, preserved wrappers, sniffed conversion-root removal, current transforms, and documented graph assumptions |
-| REQ-GEOM-1..REQ-GEOM-5 | Parsed Blob accessors and thrown coded errors prove CPU base data, optional UVs, current topology, one primitive, and faithful indices |
-| REQ-GEOM-6..REQ-GEOM-9 | Blob byte assertions prove identity/mode deduplication and component alignment; fixtures prove no extra attributes or instance expansion |
-| REQ-HAND-1..REQ-HAND-5 | Parsed transforms, positions, normals, winding, negative-scale fixture, and the combined parity scene |
-| REQ-GLB-1..REQ-GLB-5 | Hand-written emitted-subset helper over public Blob bytes |
-| REQ-GLB-6..REQ-GLB-8 | JSON inspection proves omissions and no extensions; helper and dependency diff prove the scoped validator policy |
-| REQ-ERR-1..REQ-ERR-5 | Public-seam error tests, decoded existing coded errors, and absence of warnings/logging or runtime disposal checks |
-| REQ-SIZE-1..REQ-SIZE-3 | Extended tree-shaking tests, static-import review, and dependency diff |
-| REQ-SIZE-4..REQ-SIZE-6 | Package/source review, unchanged thresholds/goldens/manifests, and focused validation record |
-| REQ-TEST-1..REQ-TEST-5 | Public-seam unit/plumbing assertions, one re-import smoke, and one combined numbered parity scene |
-| REQ-TEST-6..REQ-TEST-8 | Demo inventory/measurement, manual viewer record, and focused-vs-CI validation record |
-| REQ-DELIV-1..REQ-DELIV-3 | Architecture and implementation-plan review, including the equivalence map |
-| REQ-DELIV-4..REQ-DELIV-6 | Demo/catalog evidence, PR evidence, and cross-document contradiction audit |
+| REQ-GEOM-1..REQ-GEOM-5   | Parsed Blob accessors and thrown coded errors prove CPU base data, optional UVs, current topology, one primitive, and faithful indices                            |
+| REQ-GEOM-6..REQ-GEOM-9   | Blob byte assertions prove identity/mode deduplication and component alignment; fixtures prove no extra attributes or instance expansion                          |
+| REQ-HAND-1..REQ-HAND-5   | Parsed transforms, positions, normals, winding, negative-scale fixture, and the combined parity scene                                                             |
+| REQ-GLB-1..REQ-GLB-5     | Hand-written emitted-subset helper over public Blob bytes                                                                                                         |
+| REQ-GLB-6..REQ-GLB-8     | JSON inspection proves omissions and no extensions; helper and dependency diff prove the scoped validator policy                                                  |
+| REQ-ERR-1..REQ-ERR-5     | Public-seam error tests, decoded existing coded errors, and absence of warnings/logging or runtime disposal checks                                                |
+| REQ-SIZE-1..REQ-SIZE-3   | Extended tree-shaking tests, static-import review, and dependency diff                                                                                            |
+| REQ-SIZE-4..REQ-SIZE-6   | Package/source review, unchanged thresholds/goldens/manifests, and focused validation record                                                                      |
+| REQ-TEST-1..REQ-TEST-5   | Public-seam unit/plumbing assertions, one re-import smoke, and one combined numbered parity scene                                                                 |
+| REQ-TEST-6..REQ-TEST-8   | Demo inventory/measurement, manual viewer record, and focused-vs-CI validation record                                                                             |
+| REQ-DELIV-1..REQ-DELIV-3 | Architecture and implementation-plan review, including the equivalence map                                                                                        |
+| REQ-DELIV-4..REQ-DELIV-6 | Demo/catalog evidence, PR evidence, and cross-document contradiction audit                                                                                        |
 
 ## 12. Resolved decisions
 
-| Decision | Resolution | Affected requirements |
-| --- | --- | --- |
-| Public contract | `exportSceneGLB(scene: SceneContext): Promise<Blob>`, MIME `model/gltf-binary`, no options or download side effect | REQ-API-1..REQ-API-5 |
-| Scene selection | Ancestor closure of `scene.meshes`; remaining nodes one-to-one after root normalization; unrelated empty/unindexed nodes omitted | REQ-SCENE-1..REQ-SCENE-4 |
-| Loader hierarchy | Preserve mesh wrappers; remove only structurally sniffed no-op coordinate-conversion roots and promote their children | REQ-SCENE-7, REQ-HAND-1..REQ-HAND-4 |
-| Private architecture | Synchronous collection followed by asynchronous serialization with a private purpose-built type | REQ-API-6..REQ-API-8, REQ-DELIV-1 |
-| Geometry | Retained CPU base attributes, optional UV0, current triangle topology, identity-plus-mode deduplication, component alignment | REQ-GEOM-1..REQ-GEOM-7 |
-| Handedness | Babylon.js-equivalent ordinary-LH and removed-conversion-root states; Lite mirrored-mesh semantics select effective winding; negative scales are legal | REQ-HAND-1..REQ-HAND-5 |
-| Omitted content | No materials, textures, images, samplers, cameras, lights, animations, skins, morph output, metadata, extensions, extra attributes, or instance expansion | REQ-SCENE-5, REQ-GEOM-8..REQ-GEOM-9, REQ-GLB-6..REQ-GLB-7, REQ-ERR-3 |
-| Errors and lifetime | Existing coded thrown errors for failures; no warning channel; no exhaustive error count, nominal input check, or disposal check | REQ-ERR-1..REQ-ERR-5 |
-| GLB and validation | JSON-only empty GLB; JSON plus one BIN for geometry; hand-written emitted-subset checks; no validator dependency | REQ-GLB-1..REQ-GLB-8 |
-| Verification | Public Blob/errors only, direct assertions primary, one re-import smoke, one combined numbered parity scene, separate demo/manual gate | REQ-TEST-1..REQ-TEST-8 |
-| Equivalence map | Core behaviors mapped individually; extensions grouped as deferred | REQ-DELIV-3 |
+| Decision             | Resolution                                                                                                                                                               | Affected requirements                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| Public contract      | `exportSceneGLB(scene: SceneContext): Promise<Blob>`, MIME `model/gltf-binary`, no options or download side effect                                                       | REQ-API-1..REQ-API-5                                                 |
+| Scene selection      | Ancestor closure of `scene.meshes`; remaining nodes one-to-one after root normalization; unrelated empty/unindexed nodes omitted                                         | REQ-SCENE-1..REQ-SCENE-4                                             |
+| Loader hierarchy     | Preserve mesh wrappers; remove only structurally sniffed no-op coordinate-conversion roots and promote their children                                                    | REQ-SCENE-7, REQ-HAND-1..REQ-HAND-4                                  |
+| Private architecture | Synchronous collection followed by asynchronous serialization with a private purpose-built type                                                                          | REQ-API-6..REQ-API-8, REQ-DELIV-1                                    |
+| Geometry             | Retained CPU base attributes, optional UV0, current triangle topology, identity-plus-mode deduplication, component alignment                                             | REQ-GEOM-1..REQ-GEOM-7                                               |
+| Handedness           | Babylon.js-equivalent ordinary-LH and removed-conversion-root states; `_authoredSign` supplies the retained winding baseline; negative determinant remains in transforms | REQ-HAND-1..REQ-HAND-5                                               |
+| Omitted content      | No materials, textures, images, samplers, cameras, lights, animations, skins, morph output, metadata, extensions, extra attributes, or instance expansion                | REQ-SCENE-5, REQ-GEOM-8..REQ-GEOM-9, REQ-GLB-6..REQ-GLB-7, REQ-ERR-3 |
+| Errors and lifetime  | Existing coded thrown errors for failures; no warning channel; no exhaustive error count, nominal input check, or disposal check                                         | REQ-ERR-1..REQ-ERR-5                                                 |
+| GLB and validation   | JSON-only empty GLB; JSON plus one BIN for geometry; hand-written emitted-subset checks; no validator dependency                                                         | REQ-GLB-1..REQ-GLB-8                                                 |
+| Verification         | Public Blob/errors only, direct assertions primary, one re-import smoke, one combined numbered parity scene, separate demo/manual gate                                   | REQ-TEST-1..REQ-TEST-8                                               |
+| Equivalence map      | Core behaviors mapped individually; extensions grouped as deferred                                                                                                       | REQ-DELIV-3                                                          |
 
 ## 13. Requirement counts
 
-| Group | Count |
-| --- | ---: |
-| REQ-API | 8 |
-| REQ-SCENE | 8 |
-| REQ-GEOM | 9 |
-| REQ-HAND | 5 |
-| REQ-GLB | 8 |
-| REQ-ERR | 5 |
-| REQ-SIZE | 6 |
-| REQ-TEST | 8 |
-| REQ-DELIV | 6 |
+| Group     |  Count |
+| --------- | -----: |
+| REQ-API   |      8 |
+| REQ-SCENE |      8 |
+| REQ-GEOM  |      9 |
+| REQ-HAND  |      5 |
+| REQ-GLB   |      8 |
+| REQ-ERR   |      5 |
+| REQ-SIZE  |      6 |
+| REQ-TEST  |      8 |
+| REQ-DELIV |      6 |
 | **Total** | **63** |

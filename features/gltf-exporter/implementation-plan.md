@@ -38,7 +38,8 @@ type or serializer.
   repair or collapse mesh wrappers. Remove only roots that pass the
   Babylon.js-equivalent structural no-op coordinate-conversion test.
 - Preserve source state. Do not mutate or dispose nodes, meshes, or referenced
-  CPU arrays while an export is pending.
+  CPU arrays while an export is pending. Existing lazy interleaved getters may
+  materialize their normal de-strided cache when read.
 - Add no dependency, package subpath, threshold, ceiling, golden, or unrelated
   scene-manifest churn.
 - Keep the test helper limited to the emitted subset and do not describe it as
@@ -117,16 +118,20 @@ Blob fixtures; do not add production tests against writer internals.
 **Work:**
 
 1. Seed collection from `scene.meshes`.
-2. Walk each seed's live ancestors and retain the ancestor closure, including
-   transform-only ancestors and loader-created roots.
+2. Walk each seed's live `SceneNode` ancestors and retain the closure,
+   including transform-only ancestors and loader-created roots, stopping at a
+   non-`SceneNode` world-matrix provider.
 3. Preserve mesh wrappers. For each selected graph root, apply the
    Babylon.js-equivalent no-op coordinate-conversion test; remove matching
    transform-only roots and promote their children without using the root name.
-4. Emit each remaining included node once, preserve names and relationships,
+4. Stop at an out-of-scope non-`SceneNode` parent and snapshot the selected
+   child root's current world matrix, preserving placement without exporting
+   light/camera semantics.
+5. Emit each remaining included node once, preserve names and relationships,
    omit unrelated empty/unindexed nodes, and establish deterministic order.
-5. Snapshot inexpensive node state and record the root conversion state and
+6. Snapshot inexpensive node state and record the root conversion state and
    work needed by serialization.
-6. Keep malformed graph behavior undefined rather than adding repair or a
+7. Keep malformed graph behavior undefined rather than adding repair or a
    general validation pass.
 
 **Acceptance:**
@@ -152,7 +157,8 @@ Blob fixtures; do not add production tests against writer internals.
 **Work:**
 
 1. Read retained positions, normals, indices, and optional UVs. Do not read
-   back from the GPU.
+   back from the GPU. Treat a loader-created zero-filled retained UV array as
+   current UV geometry.
 2. Reject currently marked non-triangle topology using existing coded errors;
    treat unmarked triangle-list data as the normal case.
 3. Preserve current values and choose an index component type wide enough for
@@ -195,10 +201,14 @@ Lite roots and removable loader conversion roots, then finish serialization.
    Lite roots convert LH-to-RH; children promoted from a sniffed no-op
    conversion root use the already-RH path.
 2. Convert transforms, positions, and normals according to that state.
-3. Select final triangle winding from Lite's established mirrored-mesh rule
-   (world determinant versus `_authoredSign ?? 1`) and apply the equivalent of
-   Babylon.js's removed-root winding compensation. `_authoredSign` does not
-   select the coordinate-conversion state.
+   Normalize emitted quaternions in both states; apply Babylon.js's
+   deterministic canonical sign rule only on the converted path.
+3. Map `_authoredSign ?? 1` to the retained geometry's base orientation (the
+   same baseline used by Lite's mirrored-mesh support), then apply the
+   equivalent of Babylon.js's removed-root winding compensation.
+   `_authoredSign` does not select the coordinate-conversion state; the live
+   determinant remains encoded in the emitted transforms and does not
+   independently reverse indices.
 4. Preserve negative scales and mesh wrappers.
 5. Keep conversion private and deterministic, then pack converted data into the
    writer's component-aware buffer regions.
@@ -213,8 +223,9 @@ Lite roots and removable loader conversion roots, then finish serialization.
 - The public-seam combined fixture accepts ordinary and negative scales without
   mirrored or inside-out faces (`REQ-HAND-3`, `REQ-TEST-4`).
 - Root sniffing matches Babylon.js behavior without relying on `__root__` as a
-  name, and winding matches Lite's mirrored-mesh convention for loaded,
-  procedural, reparented, and negative-scale cases (`REQ-HAND-4`,
+  name, and winding matches Babylon.js effective-orientation behavior for
+  procedural/loaded authored baselines, promoted roots, and negative-scale
+  transforms (`REQ-HAND-4`,
   `REQ-SCENE-7`).
 - The returned Blob has correct GLB framing, chunk layout, and
   `model/gltf-binary` type (`REQ-GLB-1..REQ-GLB-5`, `REQ-API-5`).

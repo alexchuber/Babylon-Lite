@@ -25,7 +25,10 @@ by the current implementation, not a permanent limit on future exporters.
 The export is the ancestor closure of `scene.meshes`:
 
 - Every mesh in `scene.meshes` is a seed.
-- Every live ancestor needed to place a seed mesh is selected.
+- Every live `SceneNode` ancestor needed to place a seed mesh is selected.
+- A light, camera, or foreign world-matrix provider ends that walk. Its
+  selected child becomes an exported matrix root using its current world
+  transform, so placement survives without exporting the parent semantics.
 - Selected nodes are preserved one-to-one, with their names and parent/child
   relationships, except for a removable coordinate-conversion root as described
   below. Transform-only ancestors are otherwise retained.
@@ -47,6 +50,11 @@ triangle-list topology. A mesh currently marked as non-triangle is rejected;
 there is no attempt to recover topology discarded by loading, and no general
 runtime audit of lengths, finite values, or index bounds.
 
+“UVs exist” means the current retained mesh state has a non-empty CPU UV array.
+The glTF loader intentionally materializes a zero-filled UV array for a source
+primitive that omitted `TEXCOORD_0`; exporting that current zero-filled state is
+valid and does not claim to preserve source-level attribute absence.
+
 Shared geometry is deduplicated only when live geometry identity is explicitly
 shared, and the key includes the conversion mode. Unrelated arrays are not
 byte-compared. Binary regions use the alignment required by their component
@@ -62,15 +70,16 @@ Handedness follows the Babylon.js exporter state model:
 - ordinary Lite roots and their descendants use the LH-to-RH conversion path;
 - children promoted from a sniffed no-op coordinate-conversion root use the
   already-RH path, avoiding a redundant vertex conversion; and
-- triangle winding follows the mesh's effective rendered orientation, using
-  Lite's established mirrored-mesh rule (current world determinant versus
-  `_authoredSign`) and the equivalent of Babylon.js's removed-root winding
-  compensation.
+- triangle winding starts from the retained geometry baseline recorded by
+  `_authoredSign` (the same baseline used by Lite's mirrored-mesh support) and
+  applies the equivalent of Babylon.js's removed-root orientation compensation.
 
 Node transforms, positions, normals, and winding stay consistent within each
 path, and negative scales remain legal. `_authoredSign` informs effective
-winding; it does not select the coordinate-conversion path. Ambiguous conversion
-or winding behavior is resolved against the current Babylon.js glTF exporter.
+winding; it does not select the coordinate-conversion path. The live determinant
+is preserved by the emitted node transforms and does not independently reverse
+indices. Ambiguous conversion or winding behavior is resolved against the
+current Babylon.js glTF exporter.
 
 ## Private implementation direction
 
@@ -89,7 +98,9 @@ private; v1 does not define a speculative general neutral adapter.
 
 V1 uses ordinary static imports and never performs GPU readback. The exporter
 does not mutate or dispose source state, and referenced CPU arrays remain
-unmodified until the returned promise settles.
+unmodified until the returned promise settles. Reading an existing lazy
+interleaved CPU getter may populate that getter's own de-strided cache; this is
+ordinary mesh behavior, not exporter state or source-array mutation.
 
 ## Output and failure policy
 

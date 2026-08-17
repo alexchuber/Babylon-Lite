@@ -38,15 +38,19 @@ without changing what this v1 contract promises.
 ## Solution
 
 `exportSceneGLB` selects the ancestor closure of `scene.meshes`. A mesh is a
-seed, and every live ancestor needed to place it is selected. Selected nodes
-are emitted one-to-one, with names and relationships intact, including
-transform-only ancestors, except for the root normalization described next.
+seed, and every live `SceneNode` ancestor needed to place it is selected until
+a non-`SceneNode` world-matrix provider is reached. Selected nodes are emitted
+one-to-one, with names and relationships intact, including transform-only
+ancestors, except for the root normalization described next.
 Loader mesh wrappers remain. A root that matches
 Babylon.js's no-op coordinate-system conversion-root test is removed and its
 children are promoted; detection is based on transform and payload, never the
 root's name. Unrelated empty or unindexed nodes are omitted because v1 exports
 the mesh graph rather than every unattached object. Visibility and metadata are
-ignored without a warning channel.
+ignored without a warning channel. A light, camera, or other non-`SceneNode`
+ancestor is not emitted; its selected `SceneNode` child becomes a root using
+its current world matrix so mesh placement is preserved without widening v1
+into light or camera export.
 
 The private implementation collects the graph synchronously and serializes it
 asynchronously:
@@ -60,19 +64,24 @@ Collection fixes deterministic ordering, snapshots inexpensive mutable state,
 identifies explicitly shared live geometry, and records work for serialization.
 The collected type is purpose-built and private. V1 uses static imports and
 retained CPU data; it adds no GPU readback or speculative neutral adapter.
+Reading an existing lazy interleaved geometry getter may materialize its normal
+de-strided cache, but the exporter attaches no state and mutates no source array.
 
 Geometry is static base positions, normals, indices, and optional UV0. Current
 non-triangle topology is rejected. Shared geometry is deduplicated only by
 explicit live identity plus conversion mode. Skeleton, morph, VAT, and
-thin-instance meshes export base geometry only.
+thin-instance meshes export base geometry only. Optional UV means optional in
+the current retained mesh state: a loader-generated zero-filled UV array is
+exported as current state even when the source glTF omitted the attribute.
 
 Handedness follows Babylon.js exporter behavior. Ordinary Lite roots use the
 LH-to-RH path. Children promoted from a sniffed coordinate-conversion root use
 the already-RH path and avoid redundant vertex conversion. Effective winding
-uses Lite's mirrored-mesh convention (world determinant versus
-`_authoredSign`) plus Babylon.js-equivalent compensation for removed roots.
-Negative scales remain legal. The root test, not `_authoredSign`, selects the
-coordinate-conversion path.
+uses `_authoredSign` as the retained geometry baseline (the same state used by
+Lite's mirrored-mesh support) plus Babylon.js-equivalent compensation for
+removed roots. Negative scales remain legal and stay represented by node
+transforms rather than independently reversing indices. The root test, not
+`_authoredSign`, selects the coordinate-conversion path.
 
 The GLB writer emits JSON-only output with an empty default scene for an empty
 scene and JSON plus one BIN chunk for geometry. It emits no materials, textures, images, samplers,
@@ -105,17 +114,17 @@ thrown-error convention, without an exhaustive or capped error count.
 
 ## Product decisions
 
-| Area | Decision |
-| --- | --- |
-| API | Exact `exportSceneGLB(scene: SceneContext): Promise<Blob>`; no options, overload, alternate input, label, or package download |
-| Selection | Ancestor closure of `scene.meshes`; remaining nodes one-to-one after root normalization; unrelated empty/unindexed nodes omitted |
-| Hierarchy | Live parent/child structure and names preserved; mesh wrappers remain; structurally sniffed no-op conversion roots are removed |
-| Architecture | Synchronous private collection followed by asynchronous private serialization |
-| Geometry | Retained CPU base data, optional UV0, current triangle topology, identity-plus-mode sharing, component-aware alignment |
-| Handedness | Babylon.js-equivalent LH and already-RH root states; Lite mirrored-mesh semantics preserve effective winding |
-| Scope | No materials, images, cameras, lights, animation, deformation output, metadata, extensions, or extra vertex attributes |
-| Errors | Existing coded thrown errors for invalid output; no warning return or logging system; known errors are not a closed list |
-| Format | JSON-only empty GLB; JSON plus one BIN for geometry; correct framing and `model/gltf-binary` Blob |
+| Area         | Decision                                                                                                                          |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| API          | Exact `exportSceneGLB(scene: SceneContext): Promise<Blob>`; no options, overload, alternate input, label, or package download     |
+| Selection    | Ancestor closure of `scene.meshes`; remaining nodes one-to-one after root normalization; unrelated empty/unindexed nodes omitted  |
+| Hierarchy    | Live parent/child structure and names preserved; mesh wrappers remain; structurally sniffed no-op conversion roots are removed    |
+| Architecture | Synchronous private collection followed by asynchronous private serialization                                                     |
+| Geometry     | Retained CPU base data, optional UV0, current triangle topology, identity-plus-mode sharing, component-aware alignment            |
+| Handedness   | Babylon.js-equivalent LH and already-RH root states; `_authoredSign` records base winding; determinant parity stays in transforms |
+| Scope        | No materials, images, cameras, lights, animation, deformation output, metadata, extensions, or extra vertex attributes            |
+| Errors       | Existing coded thrown errors for invalid output; no warning return or logging system; known errors are not a closed list          |
+| Format       | JSON-only empty GLB; JSON plus one BIN for geometry; correct framing and `model/gltf-binary` Blob                                 |
 
 ## Testing and acceptance
 
@@ -127,9 +136,10 @@ reachability; it is not a full validator. The test inventory contains:
 - one re-import smoke test;
 - one combined numbered parity scene with asymmetric geometry, ordinary and
   negative-scale parents, a quaternion hierarchy, and the sniffed-root path;
-- direct byte assertions for root promotion, both conversion states, mirrored
-  winding, shared identity deduplication, deterministic output, optional UVs,
-  empty output, MIME, and omitted constructs;
+- direct byte assertions for root promotion, both conversion states,
+  authored-winding/root compensation, negative-scale transforms, shared
+  identity deduplication, deterministic output, optional UVs, empty output,
+  MIME, and omitted constructs;
 - one cataloged download demo with JPG thumbnail and bundle measurement; and
 - one manual external-viewer gate for a downloaded result.
 
@@ -155,13 +165,13 @@ all exporter extensions as deferred.
 
 The future architecture document MUST map each core behavior separately:
 
-| Core behavior | Reference disposition |
-| --- | --- |
-| Scene closure and node preservation | Compare behavior with Babylon.js, then implement the Lite graph contract |
-| Static CPU geometry and accessor packing | Compare emitted values and framing, then implement the Lite data path |
-| LH-to-RH conversion, no-op root removal, and winding | Follow current Babylon.js exporter state/compensation behavior, adapted to Lite's mirrored-mesh convention |
-| GLB framing, empty output, and omission rules | Implement the explicitly scoped v1 subset |
-| Exporter extensions (`KHR_*`, `EXT_*`, and material/texture features) | Grouped deferred work; no extension is emitted in v1 |
+| Core behavior                                                         | Reference disposition                                                                                      |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Scene closure and node preservation                                   | Compare behavior with Babylon.js, then implement the Lite graph contract                                   |
+| Static CPU geometry and accessor packing                              | Compare emitted values and framing, then implement the Lite data path                                      |
+| LH-to-RH conversion, no-op root removal, and winding                  | Follow current Babylon.js exporter state/compensation behavior, adapted to Lite's mirrored-mesh convention |
+| GLB framing, empty output, and omission rules                         | Implement the explicitly scoped v1 subset                                                                  |
+| Exporter extensions (`KHR_*`, `EXT_*`, and material/texture features) | Grouped deferred work; no extension is emitted in v1                                                       |
 
 This map records equivalence targets without copying Babylon.js source or test
 code.
