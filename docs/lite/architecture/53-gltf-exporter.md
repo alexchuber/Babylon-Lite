@@ -5,7 +5,8 @@
 ## Purpose
 
 Export the current contents of a Babylon Lite `SceneContext` as one portable
-glTF 2.0 GLB. V1 is a small, static geometry exporter:
+glTF 2.0 GLB. The exporter writes the scene's mesh hierarchy and static
+geometry:
 
 - The scene graph contains every mesh in `scene.meshes` and the `SceneNode`
   ancestors needed to place it.
@@ -27,7 +28,7 @@ exportSceneGLB(scene)
   -> Blob("model/gltf-binary")
 ```
 
-This document is the complete v1 contract for the exporter. Babylon.js is the
+This document is the complete contract for the exporter. Babylon.js is the
 behavioral reference for handedness, conversion root removal, winding, and
 related exporter details; its source and tests are not copied.
 
@@ -38,12 +39,12 @@ chunk, and BIN chunk.
 
 For this document:
 
-| Term          | Meaning                                                                                                                  |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Selected node | A mesh in `scene.meshes` or one of its `SceneNode` ancestors, stopping before a non-`SceneNode` world matrix provider.   |
-| Base geometry | Retained CPU positions, normals, indices, and optional UV0 before skeleton, morph, VAT, or thin-instance evaluation.     |
-| V1 output     | The glTF structures this exporter writes. The test helper checks only these structures; it is not a full glTF validator. |
-| Coded error   | Lite's existing thrown-error convention, including its current message and decoding behavior.                            |
+| Term            | Meaning                                                                                                                  |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Selected node   | A mesh in `scene.meshes` or one of its `SceneNode` ancestors, stopping before a non-`SceneNode` world matrix provider.   |
+| Base geometry   | Retained CPU positions, normals, indices, and optional UV0 before skeleton, morph, VAT, or thin-instance evaluation.     |
+| Exporter output | The glTF structures this exporter writes. The test helper checks only these structures; it is not a full glTF validator. |
+| Coded error     | Lite's existing thrown-error convention, including its current message and decoding behavior.                            |
 
 ## Public API Surface
 
@@ -94,7 +95,7 @@ export-scene-glb.ts
 | `export-scene-glb.ts`   | Public wrapper with the exact signature; calls collection, then serialization.                                                            |
 | `collect-gltf-scene.ts` | Mesh and ancestor selection, deterministic hierarchy, conversion root removal, snapshots, topology checks, and shared geometry detection. |
 | `gltf-conversion.ts`    | Handedness conversion, quaternion and matrix math, effective orientation, and triangle winding.                                           |
-| `gltf-json.ts`          | Private JSON interfaces and numeric constants for the v1 output.                                                                          |
+| `gltf-json.ts`          | Private JSON interfaces and numeric constants for the exporter output.                                                                    |
 | `glb-serializer.ts`     | Buffer view and accessor layout, little-endian writes, JSON and BIN padding, and GLB assembly.                                            |
 
 ### Mesh selection and node order
@@ -122,8 +123,8 @@ Collection follows this algorithm:
    collapsed into their transform parent.
 6. `document.scenes[0].nodes` contains exactly the emitted root indices. Every
    emitted node is reachable from the default scene through `children`.
-7. Omit unrelated empty, unindexed, or unattached nodes. V1 exports the scene's
-   mesh graph, not every object ever created.
+7. Omit unrelated empty, unindexed, or unattached nodes. The exporter writes
+   the scene's mesh graph, not every object ever created.
 
 The graph may be assumed to be a well-formed tree or forest. Cycles and
 contradictory `parent` and `children` links have undefined behavior; collection
@@ -304,9 +305,9 @@ after collection. It never writes to a retained source array, including while
 reversing indices. Collection records the current graph, transforms, names,
 conversion root status, topology, and authored winding signs before it returns,
 while the retained arrays stay available until serialization has copied their
-values into the GLB bytes. V1 performs all source reads before yielding; the
-asynchronous return preserves the contract needed for future formats or
-resources.
+values into the GLB bytes. Serialization performs all source reads before its
+first asynchronous yield. The function remains asynchronous so later exporter
+capabilities can await resources without changing the public API.
 
 The exporter itself leaves referenced CPU arrays byte-for-byte unchanged before
 and after the promise settles. External mutation of a retained array while an
@@ -322,7 +323,7 @@ For each selected mesh:
 - UV0 is optional. Emit `TEXCOORD_0` only when the current `_cpuUvs` reference
   exists and is non-empty. The loader creates a zero-filled UV array when a
   source primitive omits UV0. If that array is still on the mesh, export it:
-  v1 writes the mesh's current data, not the original file structure.
+  the exporter writes the mesh's current data, not the original file structure.
 - Use the current topology. `mesh._topology === undefined` represents the
   triangle-list case. A current non-triangle marker (point list, line list, line
   strip, or triangle strip) throws an existing coded error. The exporter does
@@ -331,7 +332,8 @@ For each selected mesh:
   retained base geometry only. It does not bake deformation or expand
   instances.
 - Ignore tangents, UV2, vertex colors, joints, weights, and every other
-  attribute outside the v1 contract. These omissions do not produce warnings.
+  attribute outside the documented geometry set. These omissions do not
+  produce warnings.
 - Preserve retained values apart from the selected handedness and winding
   conversion. Do not quantize, weld, re-index, or change vertex order.
 
@@ -529,7 +531,7 @@ metadata, `extras`, extensions, `extensionsUsed`, `extensionsRequired`,
 tangents, UV2, colors, joints, weights, or instance expansion. It also emits
 no `.gltf` plus `.bin`, external URI, Draco data, or other format. The primitive
 omits `mode` because triangle-list is the glTF default and omits `material`
-because v1 is material-free.
+because the exporter does not write materials.
 
 Naming and omission rules:
 
@@ -714,16 +716,16 @@ plain-data contracts and does not copy Babylon.js code.
 | Conversion root recognition                              | `IsNoopNode` in `packages/dev/serializers/src/exportUtils.ts`                                                                                             | Transform-only root with no `_gpu` and `parent === null`, compared with `C` using `0.001` tolerance; names do not participate.                                                                                                                                                                 |
 | Conversion root removal and promoted children            | `removeNoopRootNodes` in `_exportSceneAsync`, including `wasAddedByNoopNode`                                                                              | Remove only a passing graph root, promote selected children, assign `"already-rh"`, retain wrappers, and apply the explicit orientation compensation.                                                                                                                                          |
 | Node transform conversion                                | `_setNodeTransformation`, `ConvertToRightHandedPosition`, `ConvertToRightHandedRotation`, and `ConvertToRightHandedTransformMatrix` in `glTFUtilities.ts` | Negate X on the LH-to-RH path, conjugate matrices with `C`, apply the equivalent quaternion basis and sign rules, and preserve scale including negative components. Hierarchy nodes keep local transforms; only a selected root below an omitted non-`SceneNode` parent snapshots world space. |
-| Attribute conversion and bounds                          | `_exportBuffers`, `_exportVertexBuffer`, `GetMinMax`, and `GetAccessorType`                                                                               | Convert CPU positions and normals into new arrays, leave UV0 unchanged, compute position bounds after conversion, and type only the v1 attributes.                                                                                                                                             |
+| Attribute conversion and bounds                          | `_exportBuffers`, `_exportVertexBuffer`, `GetMinMax`, and `GetAccessorType`                                                                               | Convert CPU positions and normals into new arrays, leave UV0 unchanged, compute position bounds after conversion, and write only the documented attributes.                                                                                                                                    |
 | Effective orientation and index export                   | `_getEffectiveOrientation` and `_exportIndices` in `glTFExporter.ts`                                                                                      | Map `_authoredSign ?? 1` to the base side orientation, toggle for a removed conversion root, and reverse complete triangle triples according to the four-row table. Negative determinant remains in the node transform.                                                                        |
 | Buffer layout and binary writes                          | `BufferManager.createBufferView`, `createAccessor`, `generateBinary`, and `DataWriter`                                                                    | One buffer in the BIN chunk, one tightly packed buffer view and accessor per geometry attribute or index set, component-size alignment, explicit little-endian writes, and JSON and BIN padding.                                                                                               |
-| Empty output and v1 omissions                            | Babylon.js GLB generation and exporter feature registration                                                                                               | Emit one JSON chunk for an empty scene, one JSON plus one BIN chunk for geometry, and no v1-omitted structures or extension declarations. Lite uses its own MIME and empty-BIN rule below.                                                                                                     |
-| Exporter extensions                                      | `IGLTFExporterExtensionV2`; material, texture, camera, light, animation, skin, and morph exporters; and `KHR_*` and `EXT_*` exporter modules              | Grouped deferred work. V1 emits no extension declaration or payload and has no extension-specific branch.                                                                                                                                                                                      |
+| Empty output and omissions                               | Babylon.js GLB generation and exporter feature registration                                                                                               | Emit one JSON chunk for an empty scene, one JSON plus one BIN chunk for geometry, and none of the omitted structures or extension declarations. Lite uses its own MIME and empty-BIN rule below.                                                                                               |
+| Exporter extensions                                      | `IGLTFExporterExtensionV2`; material, texture, camera, light, animation, skin, and morph exporters; and `KHR_*` and `EXT_*` exporter modules              | Not implemented. The exporter emits no extension declaration or payload and has no extension-specific branch.                                                                                                                                                                                  |
 
 Two container details intentionally differ from the current Babylon.js output:
 Babylon.js currently includes an empty BIN chunk and uses
 `application/octet-stream`; Lite omits an empty BIN chunk and returns
-`model/gltf-binary`. Lite also limits JSON to the v1 structures described above
+`model/gltf-binary`. Lite also limits JSON to the structures described above
 rather than claiming the upstream material, animation, camera, skin, morph, or
 extension surface.
 
@@ -744,9 +746,9 @@ Production dependencies are static and minimal:
 - Platform `Blob`, `TextEncoder`, `DataView`, and typed arrays.
 
 The exporter does not import an engine, loader feature registry, material,
-resource, WebGPU, DOM, download, validator, or `getMeshGeometry` module. V1
-adds no runtime, development, peer, or test dependency. The only package
-integration is this static root re-export:
+resource, WebGPU, DOM, download, validator, or `getMeshGeometry` module. The
+exporter adds no runtime, development, peer, or test dependency. The only
+package integration is this static root re-export:
 
 ```ts
 export { exportSceneGLB } from "./export-gltf/export-scene-glb.js";
@@ -766,7 +768,7 @@ or assert `CollectedGltfScene`, `CollectedGltfGeometry`, `serializeGlb`, or any
 other private type.
 
 `tests/lite/unit/gltf-exporter-subset.ts` is a hand-written parser and
-assertion helper for the v1 output. It is not a full glTF validator, and no
+assertion helper for the exporter output. It is not a full glTF validator, and no
 validator dependency is added. It must check:
 
 - GLB magic, version, total length, chunk order, little-endian integers, UTF-8
@@ -930,7 +932,7 @@ has been created.
 | `packages/babylon-lite/src/export-gltf/gltf-json.ts`           | Private JSON interfaces for supported GLB structures, GLB constants, and component type values.                                      |
 | `packages/babylon-lite/src/export-gltf/glb-serializer.ts`      | Private buffer view layout, little-endian writer, JSON and BIN padding, and Blob assembly.                                           |
 | `packages/babylon-lite/src/index.ts`                           | Tree-shakable export from the package root; no package subpath.                                                                      |
-| `tests/lite/unit/gltf-exporter-subset.ts`                      | Blob parser and assertion helper for the v1 output, explicitly not a full validator.                                                 |
+| `tests/lite/unit/gltf-exporter-subset.ts`                      | Blob parser and assertion helper for the exporter output, explicitly not a full validator.                                           |
 | `tests/lite/unit/gltf-exporter.test.ts`                        | Focused tests for the returned Blob, determinism, geometry, roots, winding, errors, and omissions.                                   |
 | `tests/lite/plumbing/gltf-exporter-reimport.spec.ts`           | The single re-import smoke test.                                                                                                     |
 | `lab/lite/src/bjs/scene283.ts`                                 | Independently authored Babylon.js source for the combined parity scene.                                                              |
