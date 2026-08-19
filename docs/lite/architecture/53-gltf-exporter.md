@@ -41,7 +41,8 @@ The module handles three main concerns:
 ### Design rules
 
 - **Opt-in by import.** The exporter is reached only through the root export `exportSceneAsGlb`. No module in `export-gltf/` runs code at import time, and there is no global registry; extension writers are a static ordered list. Scenes without the import carry zero exporter bytes.
-- **Read-only.** The exporter reads plain-data interfaces and mutates nothing. All conversions act on copies. GPU work is limited to texture readback and is transient.
+- **Read-only.** The exporter reads plain-data interfaces and mutates nothing. All conversions act on copies. GPU work is limited to texture readback and is transient. Engine-owned caches are not written either, which is why sampler parameters are read from the texture wrapper rather than probed out of the sampler pool.
+- **No new seams.** The module adds no field, hook, or helper to any other module, and nothing but the entry point reaches the public API. Everything it needs is already-retained state; where nothing retains what it would need, it degrades and says so (skins without clips, unrecoverable samplers) instead of growing a stamp. This keeps the exporter a leaf: it can be deleted without touching another file, and bundle isolation is exact rather than budgeted.
 - **Omit defaults.** Values equal to their glTF defaults are omitted (see the consolidated table). Materials, textures, images, samplers, cameras, and skins are emitted only when referenced.
 - **Warn and continue.** Content outside the exportable set logs a `console.warn` and degrades to a defined fallback. Throws are limited to the cases listed in Warnings & Errors.
 - **Deterministic.** The same scene exports to a byte-identical GLB: stable traversal order, insertion-ordered maps, fixed writer order, no time- or randomness-dependent output.
@@ -53,9 +54,9 @@ This table is the exporter's full input surface. Extending the exporter starts b
 | Source | Fields read |
 | --- | --- |
 | `SceneContext` | `surface` (engine via `surface.engine`), `meshes`, `lights`, `camera`, `animationGroups` |
-| `SceneNode` (incl. `TransformNode`, `Mesh`) | `name`, `children`, `parent`, `position`, `rotationQuaternion`, `scaling`, `_localMatrix`, `metadata.gltf.extras`, `_gltfNodeIndex` |
+| `SceneNode` (incl. `TransformNode`, `Mesh`) | `name`, `children`, `parent`, `position`, `rotationQuaternion`, `scaling`, `_localMatrix`, `metadata.gltf.extras` |
 | `Mesh` | the above, plus `material`, `_authoredSign`, `_topology`, `_primitive`, `_cpuPositions`, `_cpuNormals`, `_cpuTangents`, `_cpuUvs`, `_cpuUv2s`, `_cpuColors`, `_cpuGpuIndices`, `_cpuIndexFormat`, `_cpuIndices`, `skeleton`, `morphTargets`, `thinInstances` |
-| `SkeletonData` | `joints`, `weights`, `joints1`, `weights1`, `_sourceSkin` |
+| `SkeletonData` | `joints`, `weights`, `joints1`, `weights1`; matched by identity against `SkeletonBinding.runtimeSkeleton` |
 | `MorphTargetData` | `targets`, `weights`, `count` |
 | `ThinInstanceData` | `matrices`, `count`, `colors` |
 | `Material` | `name`, `metadata.gltf.extras`, `_buildGroup._materialFamily`, and per-family props below |
@@ -64,8 +65,8 @@ This table is the exporter's full input surface. Extending the exporter starts b
 | `Texture2D` | `texture`, `sampler`, `width`, `height`, `uScale`, `vScale`, `uOffset`, `vOffset`, `uAng`, `_texCoord`, `_recoverySource` |
 | `LightBase` (+ concrete types) | `lightType`, `parent`, `position`, `direction`, `diffuse`, `intensity`, `range`, `angle`, `exponent` |
 | `Camera` (`ArcRotateCamera` / `FreeCamera`) | `name`, `worldMatrix`, `parent`, `fov`, `nearPlane`, `farPlane`, `ortho` (`left`, `right`, `top`, `bottom`, `halfHeight`) |
-| `AnimationGroup` | `name`, `_gltfMixer`, `targetedAnimations` |
-| `EngineContext` | `_device` (readback), primary surface canvas `width`/`height` (camera aspect), sampler pool (descriptor recovery), `VERSION` (generator string) |
+| `AnimationGroup` | `name`, `targetedAnimations` (`target`, `nodeIndex`, `path`), `_gltfMixer` (`[0]` clip for samplers and channels; `[2]` `SkeletonBinding[]` for skins) |
+| `EngineContext` | `_device` (readback), primary surface canvas `width`/`height` (camera aspect), `VERSION` (generator string) |
 
 State outside this table is not part of the current input contract; the corresponding glTF output is absent from the file, without a warning, unless a rule below says otherwise.
 
@@ -77,6 +78,7 @@ One module per glTF entity, plus helpers for concerns that cut across entities. 
 export-gltf/
   export-gltf.ts                          entry: exportSceneAsGlb, root partitioning, JSON assembly
   export-context.ts                       ExportContext, MaterialExtensionWriter, warn helper
+  gltf-document.ts                        glTF 2.0 output document typings (GltfRoot, GltfMaterial, …)
   export-handedness.ts                    LH↔RH math: positions, quaternions, matrices, winding rule
   export-buffers.ts                       BufferBuilder: bufferViews, accessors, alignment, min/max
   export-glb.ts                           GLB container framing → Blob
@@ -110,14 +112,18 @@ The 13 material writers are assembled into `const MATERIAL_EXTENSION_WRITERS: re
 
 Internal imports are static. The tree-shaking boundary is the feature itself: scenes without the exporter import carry zero of its bytes.
 
-### Loader-retained seams
+### Source identity without new stamps
 
-Two `@internal` fields, stamped by the glTF loader at load time, carry source-file identity the exporter needs. Both are plain data with no imports, like the existing `Mesh._authoredSign` stamp:
+**The exporter adds no field, hook, or helper to any module outside `export-gltf/`.** Two pieces of source-file identity it needs — which live node a glTF animation channel drives, and which joints a skin binds — are already retained by shipping code, for the animation system's own reasons:
 
-| Field | Stamped by | Contents |
+| Need | Existing carrier | Shape |
 | --- | --- | --- |
-| `SceneNode._gltfNodeIndex?: number` | `load-gltf.ts` `buildNode` | The glTF source node index this node was built from. Resolves animation channels and skin joints (which reference source indices) to live nodes. Indices are per source file; the exporter scopes resolution per collected root (see Root collection). |
-| `SkeletonData._sourceSkin?: { jointNodes: readonly number[]; inverseBindMatrices: Float32Array }` | `gltf-feature-skeleton.ts` `applyMesh` | The skin's joint list and inverse bind matrices, retained as views into the loaded buffer. |
+| Channel target | `AnimationGroup.targetedAnimations` (public) | `createAnimationGroups` builds it 1:1 with `clip.channels`; each entry carries `target` (the live `SceneNode`, when the channel addresses one), `nodeIndex` (the glTF source node index), `targetName`, and `path`. Channels resolve through `target` directly — no source-index lookup. |
+| Skin joints and IBMs | `AnimationGroup._gltfMixer[2]` — `readonly SkeletonBinding[]` | Each binding carries `jointNodes` (source node indices, in `JOINTS_*` order), `inverseBindMatrices`, `invMeshWorld`, and `runtimeSkeleton` — the identity link back to a mesh's `SkeletonData`. |
+
+`SkeletonData` itself retains only the vertex-side skin (`joints`, `weights`, `joints1`, `weights1`) and the live bone texture: `gltf-feature-skeleton.ts` consumes `jointNodes` / `inverseBindMatrices` into the bone texture at load and keeps them only through the binding above. Skin export therefore depends on the asset having animation groups — see Skin Export for the exact fence and its fallback.
+
+The exporter's one source-index → live node map is built from the `(nodeIndex, target)` pairs of every group's `targetedAnimations` (see Root collection). It covers exactly the nodes some channel animates, which is what joint resolution needs in practice and what it degrades on when a joint is animated by nothing.
 
 
 ### Internal contract types — `export-context.ts`
@@ -131,9 +137,11 @@ export interface ExportContext {
     readonly buffers: BufferBuilder;
     /** SceneNode | Mesh | LightBase | Camera → glTF node index. */
     readonly nodeIndex: Map<object, number>;
-    /** Per collected root: glTF source node index → live SceneNode (from
-     *  `_gltfNodeIndex` stamps). Indices are per source file, so scoping by
-     *  root keeps two loaded assets from colliding on the same index. */
+    /** Per collected root: glTF source node index → live SceneNode, harvested
+     *  from every group's `targetedAnimations` `(nodeIndex, target)` pairs.
+     *  Indices are per source file, so scoping by root keeps two loaded assets
+     *  from colliding on the same index. Covers animated nodes only — the
+     *  fence skin joint resolution degrades on. */
     readonly sourceNodes: Map<SceneNode, Map<number, SceneNode>>;
     readonly materialIndex: Map<Material, number>;
     /** One glTF image per GPUTexture. */
@@ -164,7 +172,7 @@ export interface MaterialExtensionWriter {
 }
 ```
 
-`exportSceneAsGlb` is the only public root export. The contract types are exported for tests and future writers, tagged `@internal` where they expose engine internals. Both are re-exported by name from `packages/babylon-lite/src/index.ts` (root-only export map, pillar 4e).
+`exportSceneAsGlb` is the only public root export, added by name to `packages/babylon-lite/src/index.ts` (root-only export map, pillar 4e). `ExportContext` and `MaterialExtensionWriter` are **not** re-exported: they are module-internal contracts, and nothing outside `export-gltf/` needs them on the public surface — tests included. Unit tests reach them by deep-importing the source module, the convention every other unit suite already uses (`tests/lite/unit/gltf-interleave.test.ts` imports `packages/babylon-lite/src/loader-gltf/gltf-interleave.js` directly). The feature's public API report gains exactly one function.
 
 ### `BufferBuilder` — `export-buffers.ts`
 
@@ -177,7 +185,7 @@ export interface MaterialExtensionWriter {
 ### Root collection and partitioning — `export-gltf.ts`
 
 1. Walk `parent` chains upward from every mesh, every exportable light, the camera, and every animation-bound node — each `targetedAnimations[].target` of a `_gltfMixer` group that is a `SceneNode`. Collect distinct roots in first-encounter order (meshes, then lights, then camera, then animation targets). Hierarchy fidelity assumes entities were added through `addToScene`, which resolves parent links. Seeding from bound targets keeps channel-only hierarchies — e.g. an animated meshless `TransformNode` root — in the export.
-2. Sweep each collected root's hierarchy once, recording `_gltfNodeIndex` stamps into that root's own `sourceNodes` map. Channel and joint resolution never crosses roots, so two loaded assets cannot collide on their per-file indices.
+2. Build each root's `sourceNodes` map from the `(nodeIndex, target)` pairs of every `_gltfMixer` group's `targetedAnimations`: a pair lands in the map of the root that collected its `target`. Joint resolution never crosses roots, so two loaded assets cannot collide on their per-file indices.
 3. Partition each root:
    - A root matching the **loader conversion root** — a `TransformNode` with no geometry, `position ≈ (0,0,0)`, `rotationQuaternion ≈ identity`, `scaling ≈ (−1,1,1)` (ε = 0.001), and targeted by no `_gltfMixer` channel (no `targetedAnimations[].target` of any group binds it; the loader builds those bindings from the same node map channel resolution uses) — is **stripped**. Its children export in the **pass-through** state. This inverts `createTransformNode("__root__", 0,0,0, 0,0,0,1, −1,1,1)` in `load-gltf.ts`.
    - Every other root exports in the **converting** state.
@@ -233,7 +241,7 @@ When a channel's target node exports in a converting pass: `translation` outputs
 ## Order of Operations
 
 1. Create the `ExportContext` (engine = `scene.surface.engine`): document root `{ asset: { generator: "Babylon Lite v" + VERSION, version: "2.0" } }`, empty arrays and caches.
-2. Collect and partition roots; sweep each root's hierarchy for `_gltfNodeIndex` stamps into its per-root `sourceNodes` map.
+2. Collect and partition roots; build each root's `sourceNodes` map from the `targetedAnimations` `(nodeIndex, target)` pairs of every `_gltfMixer` group.
 3. Node passes: `export-nodes.ts` recurses depth-first per root set. Nodes pull meshes (`export-geometry.ts`), meshes pull materials (`export-materials.ts`), materials pull textures and images.
 4. Camera: `export-cameras.ts` emits `scene.camera` when set.
 5. Lights: `ext/export-ext-lights-punctual.ts` emits each point, directional, and spot light.
@@ -414,15 +422,27 @@ No component present → no extension object. Writing one records `KHR_texture_t
 
 ### Samplers
 
-`Texture2D.sampler` is an opaque `GPUSampler`. Parameters are recovered by inverting the engine sampler pool: `getOrCreateSampler` caches one sampler per descriptor key (`min:mag:mip:addrU:addrV:addrW:aniso`), and the `@internal` helper `_samplerDescFor(engine, sampler)` in `resource/gpu-pool.ts` finds the key by sampler identity and parses it back. Mapping:
+`Texture2D.sampler` is an opaque `GPUSampler`, and Lite retains no descriptor beside it. Sampler parameters are therefore exported only when the texture wrapper's own retained state carries them — `_recoverySource`, for the kinds that record sampler intent:
+
+| `_recoverySource.kind` | Parameters from |
+| --- | --- |
+| `url` | `opts.addressModeU` / `addressModeV` / `minFilter` / `magFilter` / `mipMaps` |
+| `render`, `dynamic` | `samplerDesc` |
+| `solid`, `bitmap`, `pixels`, absent | nothing recoverable |
+
+Mapping, for the recoverable kinds:
 
 | glTF field | From | Values |
 | --- | --- | --- |
 | `wrapS` / `wrapT` | `addressModeU` / `V` | `repeat` → omitted (default 10497); `clamp-to-edge` → 33071; `mirror-repeat` → 33648 |
 | `magFilter` | `magFilter` | `nearest` → 9728; `linear` → 9729 |
-| `minFilter` | `minFilter` + `mipmapFilter` | nearest+nearest → 9984; linear+nearest → 9985; nearest+linear → 9986; linear+linear → 9987 |
+| `minFilter` | `minFilter` + `mipMaps` | nearest, no mips → 9728; linear, no mips → 9729; nearest + mips → 9986; linear + mips → 9987 |
 
-Samplers dedupe by parameter tuple; an all-default sampler emits no `sampler` property. A sampler outside the pool (the loader's per-call `lodMaxClamp` samplers) resolves to defaults with `Sampler parameters for texture <image index> were not recoverable; exporting default sampling.`
+Samplers dedupe by parameter tuple; an all-default sampler emits no `sampler` property.
+
+**Unrecoverable sampling is omitted, never guessed.** A texture whose wrapper carries no sampler intent — including every glTF-loaded image, which the loader uploads through the `bitmap` kind — emits no `sampler` property at all, so the glTF defaults apply on reimport: `wrapS` / `wrapT` REPEAT, filtering client-chosen. Those match Lite's own defaults (`addressMode*` default `repeat`, `minFilter` / `magFilter` default `linear`), so the common case round-trips unchanged; a source that set CLAMP_TO_EDGE, MIRRORED_REPEAT, or NEAREST does not. The condition is reported once per export: `Sampler parameters are not retained for <n> texture(s); exporting default sampling.`
+
+This is the one place the module is knowingly lossy against its own round-trip goal, and it is a direct consequence of the no-new-seams rule. Recovering the parameters would take either a retained descriptor on `Texture2D` or a reverse lookup into the engine's sampler pool — both core-module changes this module does not make. Probing the pool from outside (constructing candidate descriptors through `getOrCreateSampler` and comparing returned identity) would recover them with no core edit, but it writes entries into the engine's sampler cache during what is otherwise a read-only call, so it is rejected here. If wrap-mode fidelity is later judged worth a core change, a retained sampler descriptor on the texture wrapper is the seam to add, and this section is the only one that changes.
 
 ---
 
@@ -488,13 +508,21 @@ A spot `exponent` ≠ 1 logs `Spot light exponent falloff is approximated by KHR
 
 ## Skin Export — `export-skins.ts`
 
-For each exported mesh whose `skeleton` carries `_sourceSkin`:
+Skin source data lives on the animation side, not on the mesh: `SkeletonData` retains the vertex-side skin only. For each exported mesh whose `skeleton` is set:
 
-1. Resolve `_sourceSkin.jointNodes` (source glTF node indices) through the `sourceNodes` map of the root that collected the skinned mesh — never another root's — to live nodes, then through `nodeIndex` to exported node indices, in `jointNodes` order — the order the vertex `JOINTS_*` indices address.
-2. Emit one `skins` entry per distinct `_sourceSkin` (deduped by identity): `joints` = resolved indices; `inverseBindMatrices` = one MAT4/FLOAT accessor over `_sourceSkin.inverseBindMatrices` — verbatim in pass-through, `C·M·C` per matrix in converting passes. Skins carry no `name` (Lite retains none).
-3. Patch `skin` onto every node holding a primitive of this mesh, and emit the mesh's `JOINTS_*` / `WEIGHTS_*` attributes.
+1. **Find the binding.** Scan `scene.animationGroups[]._gltfMixer[2]` for the `SkeletonBinding` whose `runtimeSkeleton` is identical to `mesh.skeleton`. It supplies `jointNodes` (source node indices, in the order the vertex `JOINTS_*` values address) and `inverseBindMatrices`. Bindings dedupe by identity, so several groups sharing one skeleton emit one skin.
+2. **Resolve the joints.** Map each `jointNodes` entry through the `sourceNodes` map of the root that collected the skinned mesh — never another root's — to a live node, then through `nodeIndex` to its exported node index, in `jointNodes` order.
+3. **Emit.** One `skins` entry: `joints` = the resolved indices; `inverseBindMatrices` = one MAT4/FLOAT accessor over the binding's matrices — verbatim in pass-through, `C·M·C` per matrix in converting passes. Skins carry no `name` (Lite retains none).
+4. **Patch.** `skin` onto every node holding a primitive of this mesh, plus the mesh's `JOINTS_*` / `WEIGHTS_*` attributes.
 
-When a joint fails to resolve (missing stamps, restructured hierarchy), the skin is skipped with `Skin for mesh "<name>" has unresolvable joints; exporting the mesh unskinned.`, and the mesh emits without `JOINTS_*` / `WEIGHTS_*` — a valid rest-pose mesh. A skeleton without `_sourceSkin` (hand-assembled) takes the same fallback with its own message: `Mesh "<name>" has a skeleton without retained glTF skin data; exporting the mesh unskinned.`
+Either lookup can fail, and both degrade the same way — the mesh exports unskinned, without `JOINTS_*` / `WEIGHTS_*`, which is a valid rest-pose mesh:
+
+| Failure | Cause | Message |
+| --- | --- | --- |
+| No binding | The asset carries no animation clips, so `createAnimationGroups` returned no group and no `SkeletonBinding` exists; or the skeleton was hand-assembled | `Mesh "<name>" has no recoverable glTF skin data; exporting the mesh unskinned.` |
+| Joint unresolved | A joint node is animated by no channel in any group, so no `(nodeIndex, target)` pair records it; or the hierarchy was restructured after load | `Skin for mesh "<name>" has unresolvable joints; exporting the mesh unskinned.` |
+
+The first row is this module's sharpest scope edge: **a skinned asset carrying no animations exports as a static posed mesh.** Skinned glTF assets essentially always ship clips, and a clip that poses a skeleton animates its joints, so practical coverage is high — but the gap is real, and it follows from the no-new-seams rule rather than from glTF. Retaining the source skin on `SkeletonData` at load would close it; that is a loader change this module does not make.
 
 ---
 
@@ -530,7 +558,7 @@ The numeric constants are `animation/types.ts`'s `PATH_*` / `INTERP_*` exports, 
 Lite's clip model matches glTF (seconds-domain samplers, packed outputs, CUBICSPLINE `[inTangent, value, outTangent]` triplets), so export is a pass-through with no resampling or baking:
 
 - **Samplers**: `input` and `output` arrays embed verbatim, deduped by array identity; `interpolation` and `target.path` per the clip contract; input accessors carry min/max.
-- **Channels**: each channel resolves its target through `targetedAnimations[i].target` — the loader builds this array 1:1 with `clip.channels`, and for node and weights channels the target is the live `SceneNode` (for weights, the `TransformNode` holding the morphed mesh) — falling back to the group's **home-root** `sourceNodes` lookup of `channel.nodeIdx` (home root = the collected root of the group's first bound `SceneNode` target) when the binding is absent. `target.node` is the resolved node's exported index (for a folded mesh, its absorbing node's). A channel whose target resolves to no exported node is dropped with `Animation channel target (node <i>) is not in the exported scene; skipping channel.`
+- **Channels**: each channel resolves its target through `targetedAnimations[i].target` — `createAnimationGroups` builds that array 1:1 with `clip.channels`, and for node and weights channels the target is the live `SceneNode` (for weights, the `TransformNode` holding the morphed mesh). This is the only resolution path: a channel with no live target addresses nothing in the scene, so there is no index fallback to attempt. `target.node` is the resolved node's exported index (for a folded mesh, its absorbing node's). A channel whose target is absent, or resolves to no exported node, is dropped with `Animation channel target (node <i>) is not in the exported scene; skipping channel.`
 - **Pointer channels** (`PATH_POINTER`) resolve to load-time writer closures whose JSON pointers are not retained; each logs `KHR_animation_pointer channel in "<name>" is skipped on export.`
 - **Weights channels** target the exported node holding the morph-target mesh.
 - **Converting-pass targets** get per-key conversion per the policy. Pass-through targets embed byte-identical.
@@ -587,7 +615,7 @@ JSON is compact (`JSON.stringify`) and encoded with `TextEncoder`. The BIN chunk
 
 **Thrown** (promise rejection): winding reversal required on a `TRIANGLE_STRIP` primitive; GPU readback failure surfaced by the device. Everything else degrades.
 
-**Warn-and-continue** (message → consequence): no retained CPU geometry → node without mesh · unmapped material family → primitive without material · 1×1 factor-fold texel unreadable (null engine) → factor `[1,1,1,1]` · clearcoat IOR / F0 remap → field skipped · spot exponent ≠ 1 → falloff approximated · hemispheric light → skipped · unresolvable skin joints → mesh unskinned · skeleton without retained skin data → mesh unskinned · unreadable texture pixels → texture slot omitted · unrecoverable sampler → default sampling · instance color alpha → RGB only · combined material-wide and per-texture UV transforms → per-texture wins · camera fixup with residual transform or children → camera as its own node · null-engine orthographic aspect → `xmag = ymag` · property-animation group → skipped · pointer channel → skipped · channel target outside export → channel dropped. Each distinct message logs once per call.
+**Warn-and-continue** (message → consequence): no retained CPU geometry → node without mesh · unmapped material family → primitive without material · 1×1 factor-fold texel unreadable (null engine) → factor `[1,1,1,1]` · clearcoat IOR / F0 remap → field skipped · spot exponent ≠ 1 → falloff approximated · hemispheric light → skipped · unresolvable skin joints → mesh unskinned · no recoverable skin binding (asset ships no clips) → mesh unskinned · unreadable texture pixels → texture slot omitted · sampler parameters not retained → `sampler` omitted, glTF defaults apply · instance color alpha → RGB only · combined material-wide and per-texture UV transforms → per-texture wins · camera fixup with residual transform or children → camera as its own node · null-engine orthographic aspect → `xmag = ymag` · property-animation group → skipped · pointer channel → skipped · channel target outside export → channel dropped. Each distinct message logs once per call.
 
 ---
 
@@ -608,7 +636,7 @@ JSON is compact (`JSON.stringify`) and encoded with `TextEncoder`. The BIN chunk
 | same mirror, quaternion sign-pattern, `Rotate180Y` | identical conversion math |
 | winding from `_authoredSign` × pass kind | winding from `_getEffectiveOrientation` × `wasAddedByNoopNode` |
 | per-slot textureInfo | shared `ITextureInfo` per texture |
-| image per `GPUTexture`; sampler-pool inversion | image per `InternalTexture` + MIME; sampler table |
+| image per `GPUTexture`; sampler emitted only when the texture wrapper retained its parameters, else omitted | image per `InternalTexture` + MIME; sampler table |
 | retained bytes else readback; storage-row order | cached bytes else `GetTextureDataAsync`; readback when `invertY` set |
 | verbatim embeds cover png / jpeg / webp; KTX2 and AVIF sources re-encode through readback (rung 1 of the image ladder is the landing seam for further payload-preserving formats) | cached KTX2 / WebP / AVIF bytes relocate under `KHR_texture_basisu` / `EXT_texture_webp` / `EXT_texture_avif` (used + required) |
 | spec-gloss re-emitted via the archived extension + MR fallback | spec-gloss re-solved to metallic-roughness per texel |
@@ -617,7 +645,7 @@ JSON is compact (`JSON.stringify`) and encoded with `TextEncoder`. The BIN chunk
 | light collapse onto identity-transform parent | `IsChildCollapsible` / `CollapseChildIntoParent` |
 | spot cone from the full `angle` (`outerConeAngle = angle / 2`; inner at its schema default) | `innerConeAngle = innerAngle / 2`, `outerConeAngle = angle / 2` |
 | camera fixup collapse (`(−a, a, a)`, pristine shape only; residual → own node + warning) | camera parent collapse (`(−1,1,1)`; residual composed into the parent via `CollapseChildIntoParent`) |
-| skins from `_sourceSkin` + `_gltfNodeIndex` | skins from `Bone.getAbsoluteInverseBindMatrix()` + linked nodes |
+| skins from the animation system's `SkeletonBinding` (identity-matched to `mesh.skeleton`); unskinned fallback when the asset ships no clips | skins from `Bone.getAbsoluteInverseBindMatrix()` + linked nodes |
 | morph deltas pass through (position, normal) | morph deltas recomputed (position, normal, tangent, color) |
 | line and point primitives carry their assigned material | `LinesMesh` / `GreasedLineBaseMesh` emit a minimal per-submesh color material |
 | thin instances → `EXT_mesh_gpu_instancing` | same extension from `thinInstanceGetWorldMatrices()` |
@@ -632,10 +660,9 @@ Serializer concepts with no Lite counterpart in this spec's scope are absent fro
 - **Math**: `mat4Decompose`, `mat4Multiply`, `mat4Invert`, `quatFromRotationMatrix`, `srgbByteToLinear`; the conversion formulas in `export-handedness.ts` are self-contained.
 - **Scene state**: the Inputs table — retained CPU arrays, `SkeletonData`, `MorphTargetData`, `ThinInstanceData`, `AnimationGroup._gltfMixer`. Retention of `_cpuTangents` / `_cpuUv2s` / `_cpuColors` / `_cpuGpuIndices` requires `enableDeviceLostSceneRecovery` at load time (see the geometry retention gate).
 - **Engine**: `_device` for readback and blits; primary surface canvas (the engine is the primary surface) for camera aspect; `VERSION` for `asset.generator`.
-- **Resource pool**: the `@internal` `_samplerDescFor(engine, sampler)` reverse lookup in `resource/gpu-pool.ts`.
-- **Loader stamps**: `SceneNode._gltfNodeIndex` (stamped in `buildNode`) and `SkeletonData._sourceSkin` (stamped in `gltf-feature-skeleton.ts` `applyMesh`).
+- **No core-module changes.** The exporter adds no field, hook, or helper to the scene, mesh, loader, resource, material, or engine modules. Everything it reads is state those modules already retain for their own reasons — see the Inputs table and *Source identity without new stamps*. The only edit outside `export-gltf/` is the one added line in `index.ts` exporting the entry point.
 - **Clip constants**: the numeric `path` / `interpolation` values in the clip contract are imported from `animation/types.ts` (`PATH_*`, `INTERP_*`), never re-declared.
-- **glTF JSON types**: `GltfRoot` / `GltfMaterial` and the other document interfaces are the loader's glTF 2.0 typings, imported unchanged — the exporter declares no schema of its own.
+- **glTF JSON types**: `GltfRoot` / `GltfMaterial` and the other document interfaces are declared by this module in `gltf-document.ts`. The loader parses glTF JSON untyped (`json: any` throughout `load-gltf.ts` / `gltf-json-asset.ts`), so there is no existing document typing to import; these types describe only what the exporter writes, and adding them changes no loader code.
 - **Web platform**: `TextEncoder`, `CompressionStream("deflate")`, `fetch` (rung-1 `url` recovery), `Blob`. No DOM, no canvas; worker-safe.
 - **No third-party code.** PNG encoding, GLB framing, and conversions are in-module.
 
@@ -647,13 +674,15 @@ Four layers for this module, mapped onto TESTING.md's categories (unit · plumbi
 
 ### Unit tests — Vitest, `tests/lite/unit/export-gltf/`
 
+Tests deep-import the modules under test (`packages/babylon-lite/src/export-gltf/…`), the convention the loader suites already use; nothing is added to the package's public surface for testing.
+
 | Test | Assertion |
 | --- | --- |
 | handedness: quaternion | sign-pattern result ≡ `quat(C·mat(q)·C⁻¹)` over randomized unit quaternions; largest component non-negative |
 | handedness: position / matrix | negate-X; `C·M·C` element-for-element |
 | handedness: Rotate180Y | `(x,y,z,w) → (−z,w,x,−y)`; applied twice ≡ identity up to sign |
 | winding rule | the three policy cases; strip reversal throws; LINES/POINTS untouched; non-indexed reversal synthesizes `(0,2,1,…)` at the width the vertex count needs; mode mapping from `_topology` and `_primitive.topology` |
-| root collection | meshes → lights → camera → animation-target order; an animated meshless `TransformNode` root exports; two loaded hierarchies with colliding `_gltfNodeIndex` stamps resolve channels and joints within their own roots |
+| root collection | meshes → lights → camera → animation-target order; an animated meshless `TransformNode` root exports; two loaded hierarchies with colliding source node indices resolve joints within their own roots |
 | node TRS omission | ε-default TRS omitted; matrix nodes verbatim (pass-through) and converted (converting) |
 | mesh grouping and dedup | identity-TRS children fold into parent primitives; identical signatures share one mesh; fold fences (skeleton / thin-instance / morph agreement) split incompatible siblings into own nodes; a `Mesh` with children never absorbs; folded meshes resolve through `nodeIndex` to the absorbing node |
 | Standard→MR | base color = `linear(diffuse) × 0.5`; roughness at P = 64 (the Babylon.js conversion test's pinned value) and at the 0 / 256 / 1024 clamp boundaries; texture slot mapping incl. `normalTexture.scale = 1 / bumpLevel` |
@@ -665,12 +694,12 @@ Four layers for this module, mapped onto TESTING.md's categories (unit · plumbi
 | writers: clearcoat / sheen / iridescence / anisotropy | field mapping; sheen packed-roughness re-reference; `atan2` rotation inverse |
 | writer: spec-gloss | extension payload, MR fallback, ORM texture cleared |
 | texture transform | field mapping; rotation sign round-trips against a loader-imported reference; identity emits nothing |
-| sampler mapping | all filter combinations → 9984–9987; wrap modes; default omitted; pool-key parse round trip |
+| sampler mapping | recoverable kinds (`url` `opts`, `render` / `dynamic` `samplerDesc`) map wrap and filter modes; all-default sampler omitted; unrecoverable kinds (`bitmap`, `solid`, `pixels`, absent) emit no `sampler` and warn once |
 | BufferBuilder | alignment sort, 4-byte offsets, deferred patching, dedup, min/max |
 | GLB framing | magic, version, lengths, 0x20 / 0x00 padding, chunk types |
 | PNG encoder | encode → `DecompressionStream` inflate → pixel equality; storage-row order |
-| animations | sampler byte equality, numeric path table, interpolation mapping, CUBICSPLINE layout, input min/max, home-root channel scoping, skip rules |
-| skins | joint resolution scoped to the mesh's root, IBM pass-through and `C·M·C`, unresolvable-joint fallback, skeleton-without-`_sourceSkin` fallback |
+| animations | sampler byte equality, numeric path table, interpolation mapping, CUBICSPLINE layout, input min/max, `targetedAnimations` target resolution, skip rules |
+| skins | binding discovery by `runtimeSkeleton` identity across groups, joint resolution scoped to the mesh's root, IBM pass-through and `C·M·C`, unresolvable-joint fallback, no-clips (no-binding) fallback |
 | thin instances | TRS decomposition, identity-attribute omission, `_COLOR_0` and alpha warning, negative-determinant canonical (−Y) decomposition round trip |
 | lights | block defaults, `outerConeAngle = angle/2`, collapse rule, hemispheric skip |
 | cameras | perspective `yfov` / `znear`, `zfar` omitted at the `≥ 1e6` sentinel, ortho `xmag` / `ymag` fallbacks (incl. null-engine `xmag = ymag`), pristine fixup collapse and the residual → own-node refusal, `Rotate180Y`, `aspectRatio` omission under a null engine |
@@ -756,19 +785,20 @@ Adapted from the Babylon.js `"GLTF Serializer"` entries in `packages/tools/tests
 
 ### Bundle-size tests
 
-- **Isolation**: scenes without an `exportSceneAsGlb` import carry zero exporter bytes — per-scene manifests match a build with the exporter's modules absent; the loader stamps and `_samplerDescFor` are the audited exceptions, budgeted at single-digit bytes.
+- **Isolation**: scenes without an `exportSceneAsGlb` import carry zero exporter bytes — per-scene manifests match a build with the exporter's modules absent. There is no exception to budget: the exporter adds nothing to any always-loaded module, so the assertion is exact in both directions (every `export-gltf/` module absent from every non-exporting scene, present in the export demo).
 - **Ceiling**: the export demo scene (E-16, also the lab card) carries the `maxRawKB` ceiling on its `scene-config.json` entry; ceiling changes follow §2 rule 9.
 
 ---
 
 ## File Manifest
 
-Sizes are approximate. Rows for files outside `export-gltf/` cover the exporter-owned lines those files host.
+Sizes are approximate. Every row is a new file under `export-gltf/`; no file outside it is modified except `index.ts`, which gains one export line.
 
 | File | Size | Role |
 | --- | --- | --- |
 | `export-gltf.ts` | entry, root partitioning, orchestration, JSON assembly |
 | `export-context.ts` | `ExportContext`, `MaterialExtensionWriter`, warn helper |
+| `gltf-document.ts` | glTF 2.0 output document typings |
 | `export-handedness.ts` | mirror conversions, quaternion sign-pattern, `Rotate180Y`, winding rule |
 | `export-buffers.ts` | `BufferBuilder`: bufferViews, accessors, alignment, min/max |
 | `export-glb.ts` | GLB framing → Blob |
@@ -784,9 +814,6 @@ Sizes are approximate. Rows for files outside `export-gltf/` cover the exporter-
 | `ext/export-ext-instancing.ts` | thin instances → `EXT_mesh_gpu_instancing` |
 | `ext/export-ext-texture-transform.ts` | textureInfo transform extension |
 | `ext/export-ext-*.ts` | per-writer digests above |
-| `resource/gpu-pool.ts` | `@internal _samplerDescFor` reverse lookup — the exporter's engine-side seam |
-| `loader-gltf/load-gltf.ts` | `_gltfNodeIndex` stamp in `buildNode` |
-| `loader-gltf/gltf-feature-skeleton.ts` | `_sourceSkin` stamp |
 | `scene-config.json` | E-1 … E-24 parity scenes; E-16's entry also carries the export demo `maxRawKB` ceiling |
 | `tests/lite/unit/export-gltf/*.test.ts` | unit layer |
 | `tests/lite/export/*.spec.ts` | integration layer, validator, idempotence gates |
