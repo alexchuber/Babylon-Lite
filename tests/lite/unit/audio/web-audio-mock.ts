@@ -383,7 +383,10 @@ export class MockDomElement {
     public readonly children: unknown[] = [];
     private _listeners: { [type: string]: Array<() => void> } = {};
 
-    public constructor(public readonly tagName = "") {}
+    public constructor(
+        public readonly tagName = "",
+        public readonly ownerDocument?: MockDocument
+    ) {}
 
     public appendChild(node: unknown): unknown {
         this.children.push(node);
@@ -418,10 +421,10 @@ export class MockDomElement {
 
 /** Minimal `document` mock for the unmute-UI tests. */
 export class MockDocument {
-    public readonly head = new MockDomElement("head");
-    public readonly body = new MockDomElement("body");
+    public readonly head = new MockDomElement("head", this);
+    public readonly body = new MockDomElement("body", this);
     public createElement(tag: string): MockDomElement {
-        return new MockDomElement(tag);
+        return new MockDomElement(tag, this);
     }
     public createTextNode(text: string): { nodeValue: string } {
         return { nodeValue: text };

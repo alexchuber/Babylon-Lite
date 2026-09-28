@@ -1404,3 +1404,35 @@ export {
     stillPending,
     tickFlowGraph,
 } from "./flow-graph/index.js";
+
+// Accessibility (optional, native DOM; no renderer dependency in the tree/control modules).
+export {
+    createAccessibilityTree,
+    addAccessibilityNode,
+    updateAccessibilityNode,
+    removeAccessibilityNode,
+    disposeAccessibilityTree,
+    onAccessibilityTreeChanged,
+    batchAccessibilityUpdates,
+} from "./accessibility/accessibility-tree.js";
+export type { AccessibilityTag, AccessibilityNode, AccessibilityNodeOptions, AccessibilityTree } from "./accessibility/accessibility-tree.js";
+export { createHtmlTwin, updateHtmlTwin, getHtmlTwinElement, focusHtmlTwinNode, blurHtmlTwin, disposeHtmlTwin } from "./accessibility/html-twin.js";
+export type { HtmlTwin, HtmlTwinOptions } from "./accessibility/html-twin.js";
+export {
+    createSceneAccessibility,
+    updateSceneAccessibility,
+    getAccessibilityNode,
+    getAccessibilityTag,
+    setAccessibilityTag,
+    setAccessibilityParent,
+    disposeSceneAccessibility,
+} from "./accessibility/scene-accessibility.js";
+export type { SceneAccessibility, SceneAccessibilityOptions } from "./accessibility/scene-accessibility.js";
+export { createSceneHtmlTwin, disposeSceneHtmlTwin, showSceneFocusIndicator } from "./scene/scene-html-twin.js";
+export type { SceneHtmlTwin, SceneHtmlTwinOptions } from "./scene/scene-html-twin.js";
+export { createNativeControl, disposeNativeControl } from "./accessibility/native-control.js";
+export type { NativeControl, NativeControlOptions } from "./accessibility/native-control.js";
+export { createHtmlOverlay, updateHtmlOverlay, setHtmlOverlayVisible, disposeHtmlOverlay } from "./accessibility/html-overlay.js";
+export type { HtmlOverlay, HtmlOverlayOptions } from "./accessibility/html-overlay.js";
+export { bindAnimationManagerToScene } from "./animation/scene-animation-manager.js";
+export { getSceneAnimationsEnabled, setSceneAnimationsEnabled } from "./animation/scene-animation.js";

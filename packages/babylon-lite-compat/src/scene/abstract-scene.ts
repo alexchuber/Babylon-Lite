@@ -9,13 +9,17 @@
  * environment, animation, and lifecycle surface on top.
  */
 
-import type { Node } from "../node/node.js";
+import type { IAccessibilityTag, Node } from "../node/node.js";
 import type { Camera } from "../cameras/cameras.js";
 import type { Light } from "../lights/lights.js";
 import type { TransformNode } from "../meshes/meshes.js";
 import type { Material } from "../materials/materials.js";
 
 export abstract class AbstractScene {
+    /** @internal Optional semantic adapter notification; no accessibility work before mounting. */
+    public _accessibilityNodeChanged?: (node: Node) => void;
+    /** @internal Optional validation before publishing new semantic metadata. */
+    public _accessibilityTagChanging?: (node: Node, tag: IAccessibilityTag | null) => void;
     /**
      * @internal Canonical compat mesh-wrapper registry, keyed by the Lite node each
      * wrapper carries. Kept in sync with the Lite-core-owned scene list: a wrapper is
@@ -115,6 +119,7 @@ export abstract class AbstractScene {
         if (!this._meshes.includes(mesh)) {
             this._meshes.push(mesh);
         }
+        this._accessibilityNodeChanged?.(mesh);
     }
 
     /** @internal Register a camera so it appears in `scene.cameras`. */
@@ -122,6 +127,7 @@ export abstract class AbstractScene {
         if (!this._cameras.includes(camera)) {
             this._cameras.push(camera);
         }
+        this._accessibilityNodeChanged?.(camera);
     }
 
     /** @internal Register a light so it appears in `scene.lights`. */
@@ -129,6 +135,7 @@ export abstract class AbstractScene {
         if (!this._lights.includes(light)) {
             this._lights.push(light);
         }
+        this._accessibilityNodeChanged?.(light);
     }
 
     /** @internal Register a material so it appears in `scene.materials`. */
@@ -140,6 +147,7 @@ export abstract class AbstractScene {
 
     /** @internal Remove a node from the camera / light / mesh registries on dispose. */
     public _unregisterNode(node: Node): void {
+        this._accessibilityNodeChanged?.(node);
         const ci = this._cameras.indexOf(node as unknown as Camera);
         if (ci !== -1) {
             this._cameras.splice(ci, 1);

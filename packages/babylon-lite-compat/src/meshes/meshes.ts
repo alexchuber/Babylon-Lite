@@ -378,6 +378,7 @@ export class AbstractMesh extends TransformNode {
     public set isVisible(value: boolean) {
         this._visible = value;
         this._syncVisibility(this.isEnabled());
+        this._scene?._accessibilityNodeChanged?.(this);
     }
 
     public get isPickable(): boolean {

@@ -1,0 +1,34 @@
+import { expect, test } from "@playwright/test";
+
+test("WebGPU example exposes object selection, paused motion, and labelled playback controls", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`http://localhost:${process.env.LAB_TEST_PORT ?? 5179}/lite/accessibility.html`);
+    await expect(page.locator("canvas")).toHaveAttribute("data-ready", "true");
+    await expect(page.locator("#error")).toBeEmpty();
+    await page.getByRole("checkbox", { name: "Animate scene" }).uncheck();
+    const object = page.getByRole("button", { name: "Select sphere" });
+    await object.focus();
+    await page.keyboard.press("Enter");
+    await expect(object).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("#selection")).toHaveText("Sphere selected");
+    const marker = page.locator(".lite-accessibility-scene-focus");
+    await expect(marker).toBeVisible();
+    const position = await marker.boundingBox();
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    expect(await marker.boundingBox()).toEqual(position);
+    const unmute = page.getByRole("button", { name: "Enable example audio" });
+    await unmute.focus();
+    await page.keyboard.press("Enter");
+    await expect(unmute).toBeHidden();
+    await page.getByRole("button", { name: "Play audio", exact: true }).click();
+    await expect(page.locator("#audio-status")).toHaveText("Playing audio");
+    await page.getByRole("button", { name: "Pause audio", exact: true }).click();
+    await expect(page.locator("#audio-status")).toHaveText("Audio paused");
+    await page.getByRole("button", { name: "Resume audio", exact: true }).click();
+    await expect(page.locator("#audio-status")).toHaveText("Playing audio");
+    await page.getByRole("slider", { name: "Volume" }).focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.getByRole("slider", { name: "Volume" })).toHaveValue("0.35");
+    expect(errors).toEqual([]);
+});

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { addToScene } from "../../../packages/babylon-lite/src/scene/scene-core";
+import { setSceneAnimationsEnabled } from "../../../packages/babylon-lite/src/animation/scene-animation";
 import { _installTickAnimation } from "../../../packages/babylon-lite/src/animation/animation-group";
 import type { AnimationGroup } from "../../../packages/babylon-lite/src/animation/animation-group";
 import type { AnimationManager } from "../../../packages/babylon-lite/src/animation/animation-manager";
@@ -85,6 +86,27 @@ describe("Scene animation tick (addToScene render-loop wiring)", () => {
         addToScene(scene, container);
         scene._beforeRender[0]!(1000);
         expect(group.currentTime).toBe(0);
+    });
+
+    it("freezes scene animation without changing group playback state and resumes without catch-up", () => {
+        const group = makeGroup(makeStubController());
+        const paused = makeGroup(makeStubController());
+        paused.isPlaying = false;
+        const scene = makeScene();
+        addToScene(scene, { entities: [], animationGroups: [group, paused] } as unknown as AssetContainer);
+
+        scene._beforeRender[0]!(1000);
+        setSceneAnimationsEnabled(scene, false);
+        scene._beforeRender[0]!(5000);
+        expect(group.currentTime).toBe(3);
+        expect(group.isPlaying).toBe(true);
+        expect(paused.currentTime).toBe(0);
+        expect(paused.isPlaying).toBe(false);
+
+        setSceneAnimationsEnabled(scene, true);
+        scene._beforeRender[0]!(1000);
+        expect(group.currentTime).toBe(6);
+        expect(paused.currentTime).toBe(0);
     });
 
     it("defers to an AnimationManager: does not advance a manager-owned group", () => {

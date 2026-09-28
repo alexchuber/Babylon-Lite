@@ -1,4 +1,5 @@
 import type { EngineContext, RenderingContext } from "../engine/engine.js";
+import { sceneNodeChanged, sceneAnimationOverride } from "./scene-lifecycle.js";
 import { _vis, isRenderingContextRegistered, registerRenderingContext, unregisterRenderingContext } from "../engine/engine.js";
 import type { SurfaceContext } from "../engine/surface.js";
 import type { Camera } from "../camera/camera.js";
@@ -435,8 +436,12 @@ export function addToScene(scene: SceneContext, entity: Mesh | LightBase | Camer
         if (result.animationGroups?.length) {
             const engine = ctx.surface.engine;
             const groups = result.animationGroups;
+            const callbacks = ctx._beforeRender;
             ctx.animationGroups.push(...groups);
             const hook = (deltaMs: number): void => {
+                if (sceneAnimationOverride?.(callbacks)) {
+                    return;
+                }
                 for (const g of groups) {
                     tickAnimation(g, deltaMs, engine);
                 }
@@ -488,6 +493,7 @@ export function addToScene(scene: SceneContext, entity: Mesh | LightBase | Camer
     } else if ("lightType" in entity) {
         ctx.lights.push(entity as LightBase);
     }
+    sceneNodeChanged?.(ctx, entity, true);
     // Recurse into children of meshes, lights, cameras — set parent links
     const kids = (entity as unknown as SceneNode).children;
     if (kids?.length) {

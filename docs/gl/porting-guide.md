@@ -5,7 +5,7 @@ effects, 148 parity cases) to the WebGL2 micro-engine `@babylonjs/lite-gl`, and
 the hard-won rules that make the port pixel-identical. The payoff is a
 **~10–16× smaller** per-page bundle (no `@babylonjs/core`).
 
-This guide is the *practical companion* to the canonical spec
+This guide is the _practical companion_ to the canonical spec
 [`architecture/00-lite-gl.md`](./architecture/00-lite-gl.md) — it references that
 doc's tables rather than duplicating them:
 
@@ -40,9 +40,9 @@ style port.
 1. **Engine factory.** `new ThinEngine(canvas, aa, opts)` → `createGLEngine(canvas, opts)`. Keep the same context options (`alpha`, `premultipliedAlpha`, `depth:false`, `stencil:false`, …). See §11.1.
 2. **Classes → state + free functions.** A `BaseEffect` class becomes a plain state object plus free functions (`createBaseEffectState` / `start` / `resize` / `dispose`). Track `ownsContext` so a shared engine isn't disposed twice. See §11.2.
 3. **Convert shaders to GLSL ES 3.00** at build time (the runtime does **zero** preprocessing). See §6.2 + the shader rules below.
-4. **Rewrite each effect** mechanically (§11.3). **Order is law:** `applyEffectWrapper(wrapper)` **first**, *then* the `setEffect*` setters — uniforms write to the currently-bound program (§4.3.1). Reversing it writes to the wrong program and silently corrupts output.
+4. **Rewrite each effect** mechanically (§11.3). **Order is law:** `applyEffectWrapper(wrapper)` **first**, _then_ the `setEffect*` setters — uniforms write to the currently-bound program (§4.3.1). Reversing it writes to the wrong program and silently corrupts output.
 5. **Map Babylon constants → WebGL2 constants** for `createRawTexture` (Babylon `Constants.TEXTUREFORMAT_*` / `TEXTURETYPE_*` integers → `gl.RGBA` / `gl.UNSIGNED_BYTE` / …). See §11.4.
-6. **Handle context loss/restore** for anything *you* own (see §4 below). lite-gl auto-replays its own effects/textures/sprite buffers; consumer-owned GL state does not.
+6. **Handle context loss/restore** for anything _you_ own (see §4 below). lite-gl auto-replays its own effects/textures/sprite buffers; consumer-owned GL state does not.
 7. **Sprites / particles** (if used) → `createSpriteRenderer` (from the barrel).
 
 The full method-by-method mapping is §8 — keep it open while porting.
@@ -57,16 +57,16 @@ bit us:
 - **No runtime preprocessing.** lite-gl injects the optional `defines` string
   verbatim once and does **no** `#include` resolution of its own — the GLSL
   compiler still runs its own preprocessor, so valid `#if` works. The real
-  pitfall is *presence-based* defines: NeonBrush emits a value-less
+  pitfall is _presence-based_ defines: NeonBrush emits a value-less
   `#define SOMEDEFINE` and tests it, so `#if SOMEDEFINE` sees an empty macro and
-  misbehaves — convert those to `#ifdef SOMEDEFINE`. *(Learned porting Magic.)*
+  misbehaves — convert those to `#ifdef SOMEDEFINE`. _(Learned porting Magic.)_
 - **One fragment output named `glFragColor`.** Every `gl_FragColor` → `glFragColor`
   with `out vec4 glFragColor;` injected after the precision lines. MRT
   (`gl_FragData[N]`) is unsupported.
 - **Preserve the `*EXT` function family in your minifier.** A GLSL minifier must
   not mangle `texture2DLodEXT` (and siblings) to a short identifier — they are
-  real built-ins, not user symbols. *(NeonBrush's `minify-glsl-smart.js` had to
-  be taught this; it was renaming `texture2DLodEXT` → `eb`.)*
+  real built-ins, not user symbols. _(NeonBrush's `minify-glsl-smart.js` had to
+  be taught this; it was renaming `texture2DLodEXT` → `eb`.)_
 - **`#version 300 es` MUST be line 1**, followed by `precision` declarations
   (add `precision highp int;` too, not just `float`).
 
@@ -76,16 +76,16 @@ bit us:
 
 - **`invertY` on image loads is a decode-time flip.** lite-gl's `loadTexture2D`
   now flips via `createImageBitmap({ imageOrientation: "flipY" })`, **not**
-  `UNPACK_FLIP_Y_WEBGL` — browsers *ignore* that pixel-store flag for
+  `UNPACK_FLIP_Y_WEBGL` — browsers _ignore_ that pixel-store flag for
   `ImageBitmap` sources. If you hand-roll image uploads, do the same. (Raw and
   HTML-element uploads still honor `UNPACK_FLIP_Y_WEBGL`.)
 - **HTML-element textures have no mipmaps.** Sample them with **BILINEAR**, never
   TRILINEAR (`Texture.TRILINEAR_SAMPLINGMODE` would request a mip chain that
-  doesn't exist). *(Learned porting InputGlow.)* For a fullscreen HTML-texture
+  doesn't exist). _(Learned porting InputGlow.)_ For a fullscreen HTML-texture
   sampled with the built-in quad, you may also need an **in-shader V-flip** of the
   UV to match Babylon's orientation.
-- **Uploads target the *active* texture unit.** The bind cache elides re-binds for
-  *sampling* (correct — a sampler reads from its unit regardless of the active
+- **Uploads target the _active_ texture unit.** The bind cache elides re-binds for
+  _sampling_ (correct — a sampler reads from its unit regardless of the active
   unit), so a hand-rolled `texImage2D` after binding several samplers can land on
   the wrong texture. Always go through the package's update functions
   (`updateHtmlElementTexture`, the `_upload` closures), which use
@@ -107,9 +107,9 @@ bit us:
   the **Babylon parity reference** for a sprite scene, set
   **`disableDepthWrite = true`** on the Babylon `SpriteRenderer` so its depth
   pre-pass collapses to lite-gl's single draw — otherwise the two diverge.
-  *(Learned porting Magic's particles.)*
+  _(Learned porting Magic's particles.)_
 - **Context loss/restore.** lite-gl replays its own resources on
-  `webglcontextrestored`, but any GL object *you* create outside the package must
+  `webglcontextrestored`, but any GL object _you_ create outside the package must
   be rebuilt yourself: register `onContextRestored(engine, cb)` (and
   `onContextLost`) and rebuild there. Callbacks are deduped, fire in registration
   order, and a throwing callback won't block the others.
@@ -170,6 +170,40 @@ In-repo, this harness is `tests/gl/parity/` driven by `scene-config-webgl.json`
   scenes; do the equivalent measurement for your consumer's real entry points.
 
 ---
+
+## Add accessible DOM controls
+
+Import renderer-neutral accessibility functions independently from the Lite root alongside GL:
+
+```typescript
+import { createGLEngine } from "@babylonjs/lite-gl";
+import { createHtmlOverlay, createNativeControl, disposeHtmlOverlay, disposeNativeControl } from "@babylonjs/lite";
+
+const engine = createGLEngine(canvas);
+const panel = document.createElement("div");
+const pause = createNativeControl({
+    kind: "checkbox",
+    label: "Animate effect",
+    checked: true,
+    onChange: (enabled) => {
+        effectState.animating = enabled;
+    },
+});
+panel.append(pause.element);
+const overlay = createHtmlOverlay({ canvas, element: panel, label: "Effect controls", mode: "overlay" });
+
+// On application teardown, before removing the canvas:
+disposeHtmlOverlay(overlay);
+disposeNativeControl(pause);
+```
+
+Here `effectState.animating` is application-owned state; GL has no scene animation gate. Use `babylon-lite-gl` and `babylon-lite` for workspace imports. Neither renderer package imports the other, and DOM controls do not create a WebGPU engine.
+
+Use `createAccessibilityTree` and `createHtmlTwin` for logical grouping without a scene. The WebGPU scene adapter (`createSceneAccessibility` / `createSceneHtmlTwin`) remains separate; it does not accept a GL engine or give GL a scene graph.
+
+Native controls provide real keyboard input, labels, and editing without Babylon GUI. Overlay mode tracks the canvas's CSS bounds; panel mode uses document layout. Neither mode maps perspective mesh transforms or UV raycasts, and neither adopts inert HTML texture sources. DOM factories require a browser document, while metadata, logical trees, and package imports remain headless-safe.
+
+See [Add accessible scene controls](../lite/06-accessibility.md) for ownership, focus, validation, and the runnable example.
 
 ## 7. Quick checklist
 

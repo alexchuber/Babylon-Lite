@@ -28,6 +28,9 @@ export type CompatTarget = "core" | "addons" | "recast" | "materials";
  *   implemented).
  */
 export function mapBabylonImport(source: string): CompatTarget | null {
+    if (/^@babylonjs\/accessibility(?:\/(?:index|HtmlTwin\/(?:index|htmlTwinRenderer))(?:\.js)?)?$/.test(source)) {
+        return "core";
+    }
     if (/^@babylonjs\/(core|loaders)(\/|$)/.test(source)) {
         return "core";
     }

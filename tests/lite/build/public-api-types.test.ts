@@ -35,6 +35,74 @@ beforeAll(() => {
 }, 300_000);
 
 describe("build/index.d.ts", () => {
+    it("exports accessibility state and standalone functions through the root API", () => {
+        const probePath = resolve(BUILD_DIR, "accessibility-api.probe.ts");
+        try {
+            writeFileSync(
+                probePath,
+                `import {
+    createAccessibilityTree, addAccessibilityNode, createHtmlTwin, blurHtmlTwin,
+    createSceneHtmlTwin, createSceneAccessibility, setAccessibilityTag, setAccessibilityParent,
+    createNativeControl, createHtmlOverlay, setHtmlOverlayVisible, bindAnimationManagerToScene,
+    getSceneAnimationsEnabled, setSceneAnimationsEnabled,
+    type SceneContext, type SceneNode, type AccessibilityTag, type AnimationManager,
+} from "./index.js";
+declare const parent: HTMLElement;
+declare const canvas: HTMLCanvasElement;
+declare const scene: SceneContext;
+declare const source: SceneNode;
+declare const manager: AnimationManager;
+const tag: AccessibilityTag = { description: "Play", role: "button", eventHandler: { click: event => void event.type } };
+const tree = createAccessibilityTree();
+const node = addAccessibilityNode(tree, { tag });
+const view = createHtmlTwin(tree, { parent, canvas });
+blurHtmlTwin(view);
+createSceneHtmlTwin(scene, { parent, roots: [source] });
+const binding = createSceneAccessibility(scene, { roots: [source] });
+setAccessibilityTag(source, tag);
+setAccessibilityParent(binding, source, null);
+const control = createNativeControl({ kind: "range", label: "Volume", min: 0, max: 1, value: 0.5 });
+setHtmlOverlayVisible(createHtmlOverlay({ canvas, element: control.element }), true);
+bindAnimationManagerToScene(scene, manager);
+setSceneAnimationsEnabled(scene, !getSceneAnimationsEnabled(scene));
+// @ts-expect-error Noninteractive native elements do not have a disabled state.
+createNativeControl({ kind: "group", label: "Group", disabled: true });
+// @ts-expect-error Public declaration trimming hides semantic implementation state.
+tree._nodes;
+// @ts-expect-error Public declaration trimming hides view implementation state.
+view._items;
+// @ts-expect-error Native positive tabindex is deliberately unsupported.
+addAccessibilityNode(tree, { tag: { tabIndex: 1 } });
+void node;
+`
+            );
+            const result = spawnSync(
+                NODE,
+                [
+                    TSC_JS,
+                    "--ignoreConfig",
+                    "--noEmit",
+                    "--strict",
+                    "--target",
+                    "es2022",
+                    "--module",
+                    "esnext",
+                    "--moduleResolution",
+                    "bundler",
+                    "--lib",
+                    "es2022,dom,dom.iterable",
+                    "--types",
+                    "webxr",
+                    probePath,
+                ],
+                { cwd: PACKAGE_DIR, encoding: "utf-8" }
+            );
+            expect(result.status, `${result.stdout ?? ""}${result.stderr ?? ""}`).toBe(0);
+        } finally {
+            rmSync(probePath, { force: true });
+        }
+    });
+
     it("exposes conditional material rebuild completion", () => {
         const probePath = resolve(BUILD_DIR, "material-rebuild-api.probe.ts");
         try {

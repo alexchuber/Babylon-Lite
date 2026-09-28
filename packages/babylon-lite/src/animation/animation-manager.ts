@@ -49,6 +49,8 @@ export interface AnimationManager {
     _taskCategoryHandler?: AnimationTaskCategoryHandler;
     /** @internal Optional per-manager hook run each tick before the category handler (e.g. weight fades). */
     _preUpdate?: (manager: AnimationManager, deltaMs: number) => void;
+    /** @internal Optional ownership guard installed by explicit clock bindings. */
+    _startGuard?: () => void;
     /** @internal */
     _rafId: number;
     /** @internal */
@@ -152,6 +154,7 @@ export function updateAnimationManager(manager: AnimationManager, deltaMs: numbe
 /** Starts the manager's autonomous requestAnimationFrame loop. No-op if already running.
  *  @throws If `requestAnimationFrame` is unavailable in the host environment. */
 export function startAnimationManager(manager: AnimationManager): void {
+    manager._startGuard?.();
     if (manager.running) {
         return;
     }

@@ -76,6 +76,10 @@ export function attachConfigurableFreeControl(camera: FreeCamera, canvas: HTMLCa
         keys.delete(event.code);
     }
 
+    function clearKeys(): void {
+        keys.clear();
+    }
+
     function update(deltaMs: number): void {
         const dt = Math.max(deltaMs, 1);
         const moveSpeed = camera.speed * (hasAny(fastKeys) ? fastMultiplier : 1) * Math.sqrt((dt * dt) / 100000);
@@ -160,6 +164,7 @@ export function attachConfigurableFreeControl(camera: FreeCamera, canvas: HTMLCa
     canvas.addEventListener("contextmenu", onContextMenu);
     canvas.addEventListener("keydown", onKeyDown);
     canvas.addEventListener("keyup", onKeyUp);
+    canvas.addEventListener("blur", clearKeys);
     if (!canvas.hasAttribute("tabindex")) {
         canvas.tabIndex = 0;
     }
@@ -177,5 +182,7 @@ export function attachConfigurableFreeControl(camera: FreeCamera, canvas: HTMLCa
         canvas.removeEventListener("contextmenu", onContextMenu);
         canvas.removeEventListener("keydown", onKeyDown);
         canvas.removeEventListener("keyup", onKeyUp);
+        canvas.removeEventListener("blur", clearKeys);
+        clearKeys();
     };
 }

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <title>Accessibility plumbing</title>
+    </head>
+    <body>
+        <button type="button" id="before">Before scene</button>
+        <canvas id="renderCanvas" width="640" height="360" tabindex="0" aria-label="Camera controls"></canvas>
+        <main id="controls"></main>
+        <button type="button" id="after">After scene</button>
+        <div id="original"><input id="native-input" aria-label="Original label" /></div>
+        <output id="activations">0</output>
+        <script type="module" src="./src/accessibility-test.ts"></script>
+    </body>
+</html>

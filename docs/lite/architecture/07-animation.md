@@ -8,6 +8,22 @@ Provides a zero-allocation keyframe animation system for glTF animations and use
 
 ## Public API Surface
 
+### Scene animation switch
+
+`getSceneAnimationsEnabled(scene)` defaults to `true`.
+Call `setSceneAnimationsEnabled(scene, false)` to freeze scene-owned animation groups without changing their
+playback flags, times, weights, or speed. Re-enabling advances from the frozen
+time on the next frame; disabled time is not accumulated. Groups added while
+disabled remain frozen. Application callbacks, physics, shader-time effects,
+and independently driven `AnimationManager` instances keep their own clocks.
+
+`bindAnimationManagerToScene(scene, manager)` explicitly attaches a stopped manager
+to the scene clock and this gate. Its disposer detaches without changing tasks;
+scene disposal detaches automatically. Starting an autonomous clock while bound
+throws. The gate is stored outside scenes in a lazy weak registry. The generic
+scene lifecycle override is installed only by the setter, allowing unused gate
+code and its core call site to disappear from production bundles.
+
 ### Constants
 
 ```typescript

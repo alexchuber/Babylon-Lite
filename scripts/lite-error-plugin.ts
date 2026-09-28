@@ -69,10 +69,18 @@ function walkTsFiles(root: string): string[] {
     return out;
 }
 
-function isDeferredFeatureFile(root: string, file: string): boolean {
+function errorAllocationOrder(root: string, file: string): number {
     const relative = path.relative(root, file).replace(/\\/g, "/");
-    // Opt-in compute errors must not renumber core errors and grow scenes that never import compute.
-    return relative.startsWith("compute/") || relative.startsWith("resource/compute-storage-");
+    // Append new opt-in groups after established groups so nonusers retain their compact error codes.
+    if (
+        relative.startsWith("accessibility/") ||
+        relative === "animation/scene-animation.ts" ||
+        relative === "animation/scene-animation-manager.ts" ||
+        relative === "scene/scene-html-twin.ts"
+    ) {
+        return 2;
+    }
+    return relative.startsWith("compute/") || relative.startsWith("resource/compute-storage-") ? 1 : 0;
 }
 
 /** Re-escape already-cooked template text so it can be embedded inside a new template literal. */
@@ -156,7 +164,7 @@ export function liteErrorPlugin(): Plugin {
 
         buildStart() {
             plans.clear();
-            const files = walkTsFiles(srcRoot).sort((a, b) => Number(isDeferredFeatureFile(srcRoot, a)) - Number(isDeferredFeatureFile(srcRoot, b)) || a.localeCompare(b));
+            const files = walkTsFiles(srcRoot).sort((a, b) => errorAllocationOrder(srcRoot, a) - errorAllocationOrder(srcRoot, b) || a.localeCompare(b));
             const tableEntries: string[] = [];
             let nextCode = 0;
 

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <title>Accessibility integration</title>
+    </head>
+    <body>
+        <canvas width="640" height="360" tabindex="0" aria-label="Camera controls"></canvas>
+        <main></main>
+        <div id="original">
+            <div id="content"></div>
+            <span>Original sibling</span>
+        </div>
+        <output>0</output>
+        <button type="button" id="after">After controls</button>
+        <script type="module" src="./src/accessibility-integration-test.ts"></script>
+    </body>
+</html>
