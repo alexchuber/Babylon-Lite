@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createNullEngine } from "../../../packages/babylon-lite/src/engine/null-engine";
+import { createHemisphericLight } from "../../../packages/babylon-lite/src/light/hemispheric";
 import { addToScene, createSceneContext, disposeScene } from "../../../packages/babylon-lite/src/scene/scene-core";
 import { removeFromScene } from "../../../packages/babylon-lite/src/scene/scene-remove";
 import { createTransformNode } from "../../../packages/babylon-lite/src/scene/transform-node";
@@ -18,7 +19,7 @@ describe("scene accessibility", () => {
             name: "Cube",
             description: "A red cube",
             role: "button",
-            aria: { "aria-pressed": false },
+            aria: { "aria-hidden": false, "aria-pressed": false },
         });
         setParent(child, group);
         addToScene(scene, group);
@@ -31,6 +32,7 @@ describe("scene accessibility", () => {
         child.visible = false;
         await Promise.resolve();
         expect(childNode.hidden).toBe(true);
+        expect(childNode.tag?.aria?.["aria-hidden"]).toBe(true);
 
         child.visible = true;
         child.name = "Renamed";
@@ -47,6 +49,18 @@ describe("scene accessibility", () => {
 
         disposeScene(scene);
         expect(accessibility.tree.disposed).toBe(true);
+    });
+
+    it("includes lights that were added before the binding", () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const light = createHemisphericLight();
+        setAccessibilityTag(light, { name: "Ambient light" });
+        addToScene(scene, light);
+
+        const accessibility = createSceneAccessibility(scene);
+
+        expect(getAccessibilityNode(accessibility, light)?.tag?.name).toBe("Ambient light");
+        disposeScene(scene);
     });
 
     it("supports semantic grouping without changing transforms", async () => {

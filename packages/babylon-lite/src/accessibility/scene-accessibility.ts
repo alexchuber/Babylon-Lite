@@ -57,22 +57,35 @@ function sourceParent(source: SceneSource): SceneSource | null {
     return isSceneSource(parent) ? parent : null;
 }
 
+function projectRuntimeHidden(tag: AccessibilityTag | null, hidden: boolean): AccessibilityTag | null {
+    if (!tag || !hidden) {
+        return tag;
+    }
+    const hasAriaHidden = tag.aria ? "aria-hidden" in tag.aria : false;
+    if (tag.hidden !== false && (!hasAriaHidden || String(tag.aria?.["aria-hidden"]) === "true")) {
+        return tag;
+    }
+    return Object.freeze({
+        ...tag,
+        hidden: true,
+        aria: hasAriaHidden ? Object.freeze({ ...tag.aria, "aria-hidden": true }) : tag.aria,
+    });
+}
+
 function sourceState(source: SceneSource): Pick<AccessibilityNode, "tag" | "hidden" | "disabled"> {
     const authored = getAccessibilityTag(source);
-    const tag = authored
+    const runtimeHidden = ("_disposed" in source && source._disposed === true) || ("visible" in source && source.visible === false);
+    const snapshot = authored
         ? Object.freeze({
               ...authored,
               name: authored.name ?? authored.description ?? source.name,
               aria: authored.aria ? Object.freeze({ ...authored.aria }) : undefined,
           })
         : null;
+    const tag = projectRuntimeHidden(snapshot, runtimeHidden);
     return {
         tag,
-        hidden:
-            ("_disposed" in source && source._disposed === true) ||
-            ("visible" in source && source.visible === false) ||
-            tag?.hidden === true ||
-            String(tag?.aria?.["aria-hidden"]) === "true",
+        hidden: runtimeHidden || tag?.hidden === true || String(tag?.aria?.["aria-hidden"]) === "true",
         disabled: tag?.disabled === true || String(tag?.aria?.["aria-disabled"]) === "true",
     };
 }
@@ -229,7 +242,7 @@ export function createSceneAccessibility(scene: SceneContext, options: SceneAcce
     const adapter: SceneAccessibility = {
         tree: createAccessibilityTree(),
         _scene: scene,
-        _automatic: new Set(scene.meshes.filter(isSceneSource)),
+        _automatic: new Set([...scene.meshes, ...scene.lights].filter(isSceneSource)),
         _explicit: new Set(options.roots ?? []),
         _parents: new Map(),
         _bindings: new Map(),

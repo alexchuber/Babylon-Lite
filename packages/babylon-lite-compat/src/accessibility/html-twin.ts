@@ -8,7 +8,7 @@ import {
     removeAccessibilityNode,
     updateAccessibilityNode,
 } from "babylon-lite";
-import type { AccessibilityNode, AccessibilityTree, HtmlTwin } from "babylon-lite";
+import type { AccessibilityNode, AccessibilityTag, AccessibilityTree, HtmlTwin } from "babylon-lite";
 import type { Node } from "../node/node.js";
 import type { Scene } from "../scene/scene.js";
 
@@ -21,6 +21,21 @@ export interface IHTMLTwinRendererOptions {
 }
 
 let renderers: WeakMap<Scene, HTMLTwinRenderer> | undefined;
+
+function projectRuntimeHidden(tag: AccessibilityTag | null, hidden: boolean): AccessibilityTag | null {
+    if (!tag || !hidden) {
+        return tag;
+    }
+    const hasAriaHidden = tag.aria ? "aria-hidden" in tag.aria : false;
+    if (tag.hidden !== false && (!hasAriaHidden || String(tag.aria?.["aria-hidden"]) === "true")) {
+        return tag;
+    }
+    return Object.freeze({
+        ...tag,
+        hidden: true,
+        aria: hasAriaHidden ? Object.freeze({ ...tag.aria, "aria-hidden": true }) : tag.aria,
+    });
+}
 
 /** Babylon-compatible facade over Lite's passive semantic DOM. */
 export class HTMLTwinRenderer {
@@ -80,13 +95,14 @@ export class HTMLTwinRenderer {
         });
     }
 
-    private _collect(source: Node, desired: Set<Node>): void {
-        if (desired.has(source) || source.isDisposed()) {
+    private _collect(source: Node, desired: Set<Node>, traversed: Set<Node>): void {
+        if (traversed.has(source) || source.isDisposed()) {
             return;
         }
+        traversed.add(source);
         desired.add(source);
         for (const child of source.getChildren(undefined, true)) {
-            this._collect(child, desired);
+            this._collect(child, desired, traversed);
         }
     }
 
@@ -96,11 +112,12 @@ export class HTMLTwinRenderer {
             throw new Error("HTMLTwinRenderer is disposed.");
         }
         const desired = new Set<Node>();
+        const traversed = new Set<Node>();
         for (const source of this._roots ?? [...this._scene.meshes, ...this._scene.cameras, ...this._scene.lights]) {
-            for (let current: Node | null = source; current; current = current.parent) {
+            this._collect(source, desired, traversed);
+            for (let current = source.parent; current; current = current.parent) {
                 desired.add(current);
             }
-            this._collect(source, desired);
         }
         batchAccessibilityUpdates(this.tree, () => {
             for (const source of desired) {
@@ -111,11 +128,13 @@ export class HTMLTwinRenderer {
             for (const source of desired) {
                 const parent = source.parent && desired.has(source.parent) ? this._nodes.get(source.parent)! : null;
                 const visible = !("isVisible" in source) || source.isVisible !== false;
+                const runtimeHidden = source.isDisposed() || !source.isEnabled() || !visible;
+                const tag = projectRuntimeHidden(source.accessibilityTag, runtimeHidden);
                 updateAccessibilityNode(this.tree, this._nodes.get(source)!, {
-                    tag: source.accessibilityTag,
+                    tag,
                     parent,
-                    hidden: source.isDisposed() || !source.isEnabled() || !visible,
-                    disabled: source.accessibilityTag?.disabled === true,
+                    hidden: runtimeHidden || tag?.hidden === true || String(tag?.aria?.["aria-hidden"]) === "true",
+                    disabled: tag?.disabled === true || String(tag?.aria?.["aria-disabled"]) === "true",
                     target: source,
                 });
             }
