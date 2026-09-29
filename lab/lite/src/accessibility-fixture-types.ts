@@ -1,7 +1,13 @@
-export {};
+export type AccessibilityProjectionCase = "orthographic" | "viewport" | "near" | "behind" | "origin" | "floating" | "parent" | "resize";
 
 declare global {
     interface Window {
+        accessibilityProjection: {
+            configure(value: AccessibilityProjectionCase): Promise<void>;
+        };
+        accessibilityRace: {
+            run(state: "disabled" | "hidden" | "disposed"): void;
+        };
         accessibilityFixture: {
             update(): void;
             hide(): void;

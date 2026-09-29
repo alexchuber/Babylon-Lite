@@ -444,6 +444,7 @@ The following files define focused contracts. Their presence is not a claim that
 | `tests/lite/plumbing/accessibility.spec.ts`                           | Chromium semantics, Tab/activation, ARIA replacement, adopted editing, focus recovery, disabled descendants, failed ownership, remount |
 | `tests/lite/plumbing/accessibility-integration.spec.ts`               | Native projected focus, camera isolation, GL live overlays, compat actions/keyboard/ordering and cleanup                               |
 | `tests/lite/plumbing/accessibility-example.spec.ts`                   | Runnable example controls                                                                                                              |
+| `tests/lite/plumbing/accessibility-projection.spec.ts`                | Orthographic/CSS/viewport/DPI/floating-origin focus, near-plane fallback, forced colors, live form ownership and restoration           |
 | `packages/babylon-lite-compat/tests/accessibility.test.ts`            | Tag bridge and exact public import mapping                                                                                             |
 | `packages/babylon-lite-compat/tests/actions.test.ts`                  | Trigger constants, original events, filters, conditions, existing chaining                                                             |
 | `packages/babylon-lite-compat/tests/scene-animations-enabled.test.ts` | Compat scene animation gate                                                                                                            |
@@ -456,7 +457,7 @@ Targeted validation uses the existing runners:
 pnpm exec vitest run --project unit tests/lite/unit/accessibility-tree.test.ts tests/lite/unit/scene-accessibility.test.ts tests/lite/unit/scene-animation-manager.test.ts
 pnpm exec vitest run --project compat packages/babylon-lite-compat/tests/accessibility.test.ts packages/babylon-lite-compat/tests/actions.test.ts packages/babylon-lite-compat/tests/scene-animations-enabled.test.ts
 pnpm exec vitest run --project build tests/lite/build/accessibility-treeshake.test.ts tests/lite/build/public-api-types.test.ts
-pnpm exec playwright test tests/lite/plumbing/accessibility.spec.ts tests/lite/plumbing/accessibility-integration.spec.ts tests/lite/plumbing/accessibility-example.spec.ts
+pnpm exec playwright test tests/lite/plumbing/accessibility.spec.ts tests/lite/plumbing/accessibility-integration.spec.ts tests/lite/plumbing/accessibility-projection.spec.ts tests/lite/plumbing/accessibility-example.spec.ts
 ```
 
 Keyboard and Chromium accessibility-tree assertions do not replace manual screen-reader and forced-colors checks. Renderer screenshot parity and performance remain user/CI work. No golden, MAD threshold, or bundle ceiling is changed by this feature's documentation.

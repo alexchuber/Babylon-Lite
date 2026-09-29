@@ -3,6 +3,17 @@ import type {} from "../../../lab/lite/src/accessibility-fixture-types";
 
 const url = `http://localhost:${process.env.LAB_TEST_PORT ?? 5179}/lite/accessibility-integration-test.html`;
 
+for (const mode of ["scene", "compat"]) {
+    for (const state of ["disabled", "hidden", "disposed"] as const) {
+        test(`${mode} suppresses ${state} target activation before queued DOM reconciliation`, async ({ page }) => {
+            await page.goto(`${url}?mode=${mode}`);
+            await expect(page.locator("body")).toHaveAttribute("data-ready", "true");
+            await page.evaluate((state) => window.accessibilityRace.run(state), state);
+            await expect(page.locator("output")).toHaveText("0");
+        });
+    }
+}
+
 test("native scene objects expose disabled state, secondary keys, and a moving focus marker", async ({ page }) => {
     await page.goto(`${url}?mode=scene`);
     await expect(page.locator("body")).toHaveAttribute("data-ready", "true");
