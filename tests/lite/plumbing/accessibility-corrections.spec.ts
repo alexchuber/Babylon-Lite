@@ -785,6 +785,211 @@ test("G03 compat refresh supersedes stale local and subtree queues but preserves
     expect(result).toEqual({ staleLocal: false, staleSubtree: false, retained: true, nodeCount: 2, managerCount: 0 });
 });
 
+test("H03 compat refresh suppresses reentrant work for sources pruned by the same scan", async ({ page }) => {
+    const result = await page.evaluate(async (urls) => {
+        const api: typeof Lite = await import(urls.lite);
+        const { Scene }: typeof CompatScene = await import(urls.scene);
+        const { NullEngine }: typeof CompatEngine = await import(urls.engine);
+        const { TransformNode }: typeof CompatMeshes = await import(urls.meshes);
+        const { HTMLTwinRenderer }: typeof CompatTwin = await import(urls.twin);
+        const { ActionManager, ExecuteCodeAction }: typeof CompatActions = await import(urls.actions);
+        const engine = new NullEngine();
+        const canvas = document.createElement("canvas");
+        document.body.append(canvas);
+        engine.getRenderingCanvas = () => canvas;
+        const scene = new Scene(engine);
+        const retained = new TransformNode("Retained", scene);
+        const staleLocal = new TransformNode("Stale local", scene);
+        const staleSubtree = new TransformNode("Stale subtree", scene);
+        for (const source of [retained, staleLocal, staleSubtree]) {
+            source.accessibilityTag = { description: source.name };
+            scene.meshes.push(source);
+        }
+        const manager = new ActionManager(scene);
+        manager.isRecursive = true;
+        staleSubtree.actionManager = manager;
+        const renderer = HTMLTwinRenderer.Render(scene, { parentElement: document.body });
+        let reentered = false;
+        const unsubscribe = api.onAccessibilityTreeChanged(renderer.tree, () => {
+            if (reentered) {
+                return;
+            }
+            reentered = true;
+            renderer.refresh();
+            staleLocal.name = "Reentrant stale local";
+            manager.registerAction(new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {}));
+            retained.accessibilityTag = { description: "Reentrant retained" };
+        });
+        scene.meshes.splice(scene.meshes.indexOf(staleLocal), 1);
+        scene.meshes.splice(scene.meshes.indexOf(staleSubtree), 1);
+
+        renderer.refresh();
+        unsubscribe();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const internals = renderer as unknown as {
+            _nodes: Map<unknown, unknown>;
+            _managers: Map<unknown, unknown>;
+            _dirty: Set<unknown>;
+            _dirtySubtrees: Set<unknown>;
+        };
+        const result = {
+            staleLocalDom: renderer.view.element.textContent?.includes("Reentrant stale local") ?? false,
+            staleSubtreeDom: renderer.view.element.textContent?.includes("Stale subtree") ?? false,
+            retainedDom: renderer.view.element.textContent?.includes("Reentrant retained") ?? false,
+            staleLocalNode: internals._nodes.has(staleLocal),
+            staleSubtreeNode: internals._nodes.has(staleSubtree),
+            staleManager: internals._managers.has(staleSubtree),
+            nodeCount: internals._nodes.size,
+            managerCount: internals._managers.size,
+            localQueue: internals._dirty.size,
+            subtreeQueue: internals._dirtySubtrees.size,
+        };
+        scene.dispose();
+        return result;
+    }, urls);
+    expect(result).toEqual({
+        staleLocalDom: false,
+        staleSubtreeDom: false,
+        retainedDom: true,
+        staleLocalNode: false,
+        staleSubtreeNode: false,
+        staleManager: false,
+        nodeCount: 1,
+        managerCount: 0,
+        localQueue: 0,
+        subtreeQueue: 0,
+    });
+});
+
+test("H04 native and compat source tags reject authored-state conflicts synchronously", async ({ page }) => {
+    const result = await page.evaluate(async (urls) => {
+        const api: typeof Lite = await import(urls.lite);
+        const nativeScene = api.createSceneContext(api.createNullEngine(), { defaultRenderTask: false });
+        const nativeSource = api.createTransformNode("Native authored");
+        const nativeInherited = api.createTransformNode("Native inherited");
+        const nativeAdapter = api.createSceneAccessibility(nativeScene, { roots: [nativeSource, nativeInherited] });
+        const nativeNode = api.getAccessibilityNode(nativeAdapter, nativeSource)!;
+        api.updateAccessibilityNode(nativeAdapter.tree, nativeNode, { hidden: true });
+        const nativeBefore = { tag: api.getAccessibilityTag(nativeSource), nodeTag: nativeNode.tag, hidden: nativeNode.hidden };
+        let nativeRejected = false;
+        try {
+            api.setAccessibilityTag(nativeSource, { name: "Rejected native", aria: { "aria-hidden": false } });
+        } catch {
+            nativeRejected = true;
+        }
+        api.setAccessibilityTag(nativeInherited, { name: "Inherited native", aria: { "aria-hidden": true } });
+
+        const { Scene }: typeof CompatScene = await import(urls.scene);
+        const { NullEngine }: typeof CompatEngine = await import(urls.engine);
+        const { TransformNode }: typeof CompatMeshes = await import(urls.meshes);
+        const { HTMLTwinRenderer }: typeof CompatTwin = await import(urls.twin);
+        const engine = new NullEngine();
+        const canvas = document.createElement("canvas");
+        document.body.append(canvas);
+        engine.getRenderingCanvas = () => canvas;
+        const compatScene = new Scene(engine);
+        const compatSource = new TransformNode("Compat authored", compatScene);
+        const compatInherited = new TransformNode("Compat inherited", compatScene);
+        compatSource.accessibilityTag = { description: "Compat authored" };
+        compatInherited.accessibilityTag = { description: "Compat inherited" };
+        const renderer = HTMLTwinRenderer.Render(compatScene, { roots: [compatSource, compatInherited], parentElement: document.body });
+        const internals = renderer as unknown as { _nodes: Map<unknown, Lite.AccessibilityNode>; _dirty: Set<unknown>; _pending: boolean };
+        const compatNode = internals._nodes.get(compatSource)!;
+        api.updateAccessibilityNode(renderer.tree, compatNode, { disabled: false });
+        const compatBefore = { tag: compatSource.accessibilityTag, nodeTag: compatNode.tag, disabled: compatNode.disabled };
+        let compatRejected = false;
+        const asyncErrors: string[] = [];
+        const onError = (event: ErrorEvent): void => {
+            asyncErrors.push(event.message);
+            event.preventDefault();
+        };
+        window.addEventListener("error", onError);
+        try {
+            compatSource.accessibilityTag = { description: "Rejected compat", aria: { "aria-disabled": true } };
+        } catch {
+            compatRejected = true;
+        }
+        if (compatRejected) {
+            compatInherited.accessibilityTag = { description: "Inherited compat", aria: { "aria-disabled": true } };
+        }
+        await Promise.resolve();
+        await Promise.resolve();
+        window.removeEventListener("error", onError);
+
+        const result = {
+            nativeRejected,
+            nativeUnchanged: api.getAccessibilityTag(nativeSource) === nativeBefore.tag && nativeNode.tag === nativeBefore.nodeTag && nativeNode.hidden === nativeBefore.hidden,
+            nativePending: nativeAdapter._pending,
+            nativeInherited: api.getAccessibilityNode(nativeAdapter, nativeInherited)?.tag?.aria?.["aria-hidden"],
+            compatRejected,
+            compatUnchanged: compatSource.accessibilityTag === compatBefore.tag && compatNode.tag === compatBefore.nodeTag && compatNode.disabled === compatBefore.disabled,
+            compatPending: internals._pending,
+            compatDirty: internals._dirty.size,
+            compatInherited: compatInherited.accessibilityTag?.aria?.["aria-disabled"],
+            asyncErrors,
+        };
+        api.disposeScene(nativeScene);
+        compatScene.dispose();
+        return result;
+    }, urls);
+    expect(result).toEqual({
+        nativeRejected: true,
+        nativeUnchanged: true,
+        nativePending: false,
+        nativeInherited: true,
+        compatRejected: true,
+        compatUnchanged: true,
+        compatPending: false,
+        compatDirty: 0,
+        compatInherited: true,
+        asyncErrors: [],
+    });
+});
+
+test("H01 direct-parent joins preserve sibling DOM identity and semantic overrides", async ({ page }) => {
+    const result = await page.evaluate(async (url) => {
+        const api: typeof Lite = await import(url);
+        const scene = api.createSceneContext(api.createNullEngine(), { defaultRenderTask: false });
+        const adapter = api.createSceneAccessibility(scene);
+        const root = api.createTransformNode("Root");
+        const stable = api.createTransformNode("Stable sibling");
+        const joinPoint = api.createTransformNode("Join point");
+        const branch = api.createTransformNode("Joining branch");
+        const branchLeaf = api.createTransformNode("Joining leaf");
+        for (const source of [root, stable, joinPoint, branch, branchLeaf]) {
+            api.setAccessibilityTag(source, { name: source.name, eventHandler: { click: () => {} } });
+            api.addToScene(scene, source);
+        }
+        stable.parent = root;
+        joinPoint.parent = root;
+        branchLeaf.parent = branch;
+        await Promise.resolve();
+        api.setAccessibilityParent(adapter, stable, null);
+        const view = api.createHtmlTwin(adapter.tree, { parent: document.body });
+        const findButton = (name: string): HTMLButtonElement | undefined =>
+            [...view.element.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === name);
+        const stableNode = api.getAccessibilityNode(adapter, stable)!;
+        const stableElement = findButton("Stable sibling");
+
+        branch.parent = joinPoint;
+        await Promise.resolve();
+
+        const labels = [root, stable, joinPoint, branch, branchLeaf].map((source) => (findButton(source.name) ? 1 : 0));
+        const result = {
+            labels,
+            stableNode: api.getAccessibilityNode(adapter, stable) === stableNode,
+            stableParent: stableNode.parent === null,
+            stableElement: findButton("Stable sibling") === stableElement,
+            automaticTokens: adapter._membershipTokens.automatic.size,
+        };
+        api.disposeScene(scene);
+        return result;
+    }, urls.lite);
+    expect(result).toEqual({ labels: [1, 1, 1, 1, 1], stableNode: true, stableParent: true, stableElement: true, automaticTokens: 1 });
+});
+
 test("F02 recursive compat action changes reconcile descendants", async ({ page }) => {
     const result = await page.evaluate(async (urls) => {
         const { Scene }: typeof CompatScene = await import(urls.scene);

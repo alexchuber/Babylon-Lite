@@ -4,7 +4,7 @@ import { addToScene, createSceneContext, disposeScene } from "../../../packages/
 import { createFreeCamera } from "../../../packages/babylon-lite/src/camera/free-camera";
 import { createTransformNode } from "../../../packages/babylon-lite/src/scene/transform-node";
 import { setParent } from "../../../packages/babylon-lite/src/scene/set-parent";
-import { createSceneAccessibility, getAccessibilityNode, setAccessibilityParent } from "../../../packages/babylon-lite/src/accessibility/scene-accessibility";
+import { createSceneAccessibility, getAccessibilityNode, setAccessibilityParent, setAccessibilityTag } from "../../../packages/babylon-lite/src/accessibility/scene-accessibility";
 import { updateSceneAccessibility } from "../../../packages/babylon-lite/src/accessibility/scene-accessibility";
 import type { Mesh } from "../../../packages/babylon-lite/src/mesh/mesh";
 import { removeFromScene } from "../../../packages/babylon-lite/src/scene/scene-remove";
@@ -118,6 +118,201 @@ describe("camera membership boundaries", () => {
         );
         expect(automaticMemberships).toBe(4);
         expect(adapter._membershipTokens.automatic.size).toBe(1);
+        disposeScene(scene);
+    });
+
+    it("H01 closes direct-parent joins over shared tokens without dropping unaffected siblings", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const adapter = createSceneAccessibility(scene);
+        const root = createTransformNode("Root");
+        const stable = createTransformNode("Stable sibling");
+        const joinPoint = createTransformNode("Join point");
+        const branch = createTransformNode("Joining branch");
+        const branchLeaf = createTransformNode("Joining leaf");
+        for (const source of [root, stable, joinPoint, branch, branchLeaf]) {
+            addToScene(scene, source);
+        }
+        stable.parent = root;
+        joinPoint.parent = root;
+        branchLeaf.parent = branch;
+        await Promise.resolve();
+
+        setAccessibilityTag(stable, { name: "Stable override" });
+        setAccessibilityParent(adapter, stable, null);
+        const stableNode = getAccessibilityNode(adapter, stable)!;
+        const branchLeafNode = getAccessibilityNode(adapter, branchLeaf)!;
+        branch.parent = joinPoint;
+        await Promise.resolve();
+
+        expect(getAccessibilityNode(adapter, stable)).toBe(stableNode);
+        expect(stableNode).toMatchObject({ parent: null, tag: { name: "Stable override" } });
+        expect(getAccessibilityNode(adapter, branchLeaf)).toBe(branchLeafNode);
+        expect([root, stable, joinPoint, branch, branchLeaf].every((source) => getAccessibilityNode(adapter, source))).toBe(true);
+        expect(adapter._membershipTokens.automatic.size).toBe(1);
+        expect(
+            [...adapter._bindings.values()].reduce(
+                (count, binding) => count + [...binding.memberships].filter((sourceMembership) => sourceMembership.kind === "automatic").length,
+                0
+            )
+        ).toBe(5);
+        disposeScene(scene);
+    });
+
+    it("H02 retires a parent-rooted automatic claim after its last source is removed and its camera claim clears", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const adapter = createSceneAccessibility(scene);
+        const camera = createFreeCamera({ x: 0, y: 0, z: -5 }, { x: 0, y: 0, z: 0 });
+        const child = createTransformNode("Automatic child");
+
+        for (let cycle = 0; cycle < 5; cycle++) {
+            scene.camera = camera;
+            addToScene(scene, child);
+            setParent(child, camera);
+            await Promise.resolve();
+            expect(adapter._membershipTokens.automatic.size).toBe(1);
+
+            removeFromScene(scene, child);
+            scene.camera = null;
+            expect(getAccessibilityNode(adapter, child)).toBeUndefined();
+            expect(getAccessibilityNode(adapter, camera)).toBeUndefined();
+            await Promise.resolve();
+
+            expect(getAccessibilityNode(adapter, child)).toBeUndefined();
+            expect(getAccessibilityNode(adapter, camera)).toBeUndefined();
+            expect(adapter._bindings.size).toBe(0);
+            expect(adapter._automaticSources.size).toBe(0);
+            expect(adapter._automaticRoots.size).toBe(0);
+            expect(adapter._membershipTokens.automatic.size).toBe(0);
+            expect(adapter._memberships.size).toBe(0);
+            expect([...adapter._bindings.values()].reduce((count, binding) => count + binding.unsubscribe.length, 0)).toBe(0);
+        }
+        disposeScene(scene);
+    });
+
+    it("H02 preserves an explicit root while retiring its final automatic and camera claims", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const camera = createFreeCamera({ x: 0, y: 0, z: -5 }, { x: 0, y: 0, z: 0 });
+        const child = createTransformNode("Automatic child");
+        const adapter = createSceneAccessibility(scene, { roots: [camera] });
+        scene.camera = camera;
+        addToScene(scene, child);
+        setParent(child, camera);
+        await Promise.resolve();
+        const cameraNode = getAccessibilityNode(adapter, camera);
+
+        removeFromScene(scene, child);
+        scene.camera = null;
+        await Promise.resolve();
+
+        expect(getAccessibilityNode(adapter, child)).toBeUndefined();
+        expect(getAccessibilityNode(adapter, camera)).toBe(cameraNode);
+        expect([...adapter._bindings.get(camera)!.memberships].map((sourceMembership) => sourceMembership.kind)).toEqual(["explicit"]);
+        expect(adapter._automaticRoots.size).toBe(0);
+        expect(adapter._membershipTokens.automatic.size).toBe(0);
+        disposeScene(scene);
+    });
+
+    it("H02 batches recursive removals without repeatedly expanding the shared automatic claim", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const adapter = createSceneAccessibility(scene);
+        const root = createTransformNode("Recursive root");
+        const children = Array.from({ length: 64 }, (_, index) => createTransformNode(`Recursive child ${index}`));
+        for (const child of children) {
+            setParent(child, root);
+        }
+        addToScene(scene, root);
+        const token = [...adapter._membershipTokens.automatic.values()][0]!;
+        const members = adapter._memberships.get(token)!;
+        let memberVisits = 0;
+        const countedMembers = new Set(members);
+        countedMembers[Symbol.iterator] = function* (): Generator<Parameters<typeof members.add>[0], undefined, unknown> {
+            for (const member of members) {
+                memberVisits++;
+                yield member;
+            }
+            return undefined;
+        };
+        adapter._memberships.set(token, countedMembers);
+
+        removeFromScene(scene, root);
+        await Promise.resolve();
+
+        expect(memberVisits).toBeLessThanOrEqual((children.length + 1) * 2);
+        expect(adapter._bindings.size).toBe(0);
+        expect(adapter._automaticSources.size).toBe(0);
+        expect(adapter._automaticRoots.size).toBe(0);
+        expect(adapter._membershipTokens.automatic.size).toBe(0);
+        expect(adapter._memberships.size).toBe(0);
+        disposeScene(scene);
+    });
+
+    it("H02 removes a recursive hierarchy without scanning unrelated semantic overrides per source", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const root = createTransformNode("Recursive root");
+        const children = Array.from({ length: 32 }, (_, index) => createTransformNode(`Recursive child ${index}`));
+        for (const child of children) {
+            setParent(child, root);
+        }
+        const semanticParent = createTransformNode("Semantic parent");
+        const semanticChildren = Array.from({ length: 32 }, (_, index) => createTransformNode(`Semantic child ${index}`));
+        const adapter = createSceneAccessibility(scene, { roots: [semanticParent, ...semanticChildren] });
+        for (const child of semanticChildren) {
+            setAccessibilityParent(adapter, child, semanticParent);
+        }
+        addToScene(scene, root);
+        const parents = adapter._parents;
+        const iterateParents = parents[Symbol.iterator].bind(parents);
+        let parentVisits = 0;
+        parents[Symbol.iterator] = function* (): Generator<Parameters<typeof parents.set>, undefined, unknown> {
+            for (const entry of { [Symbol.iterator]: iterateParents }) {
+                parentVisits++;
+                yield entry;
+            }
+            return undefined;
+        };
+
+        removeFromScene(scene, root);
+        await Promise.resolve();
+
+        expect(parentVisits).toBeLessThanOrEqual(semanticChildren.length);
+        expect([root, ...children].every((source) => getAccessibilityNode(adapter, source) === undefined)).toBe(true);
+        expect(semanticChildren.every((source) => getAccessibilityNode(adapter, source)?.parent === getAccessibilityNode(adapter, semanticParent))).toBe(true);
+        disposeScene(scene);
+    });
+
+    it("H05 expands one shared automatic token once for a batch of parent writes", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const adapter = createSceneAccessibility(scene);
+        const sources = Array.from({ length: 32 }, (_, index) => createTransformNode(`Shared ${index}`));
+        for (const source of sources) {
+            addToScene(scene, source);
+        }
+        for (let index = 1; index < sources.length; index++) {
+            sources[index]!.parent = sources[index - 1]!;
+        }
+        await Promise.resolve();
+
+        const token = [...adapter._membershipTokens.automatic.values()][0]!;
+        const members = adapter._memberships.get(token)!;
+        let memberVisits = 0;
+        const countedMembers = new Set(members);
+        countedMembers[Symbol.iterator] = function* (): Generator<Parameters<typeof members.add>[0], undefined, unknown> {
+            for (const member of members) {
+                memberVisits++;
+                yield member;
+            }
+            return undefined;
+        };
+        adapter._memberships.set(token, countedMembers);
+        for (let index = 2; index < sources.length; index++) {
+            sources[index]!.parent = sources[0]!;
+        }
+
+        await Promise.resolve();
+
+        expect(memberVisits).toBeLessThanOrEqual(sources.length * 4);
+        expect(adapter._membershipTokens.automatic.size).toBe(1);
+        expect(sources.every((source) => getAccessibilityNode(adapter, source))).toBe(true);
         disposeScene(scene);
     });
 

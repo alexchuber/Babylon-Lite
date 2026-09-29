@@ -15,6 +15,7 @@ import {
 import { setParent } from "../../../packages/babylon-lite/src/scene/set-parent";
 import { sceneNodeChanged } from "../../../packages/babylon-lite/src/scene/scene-lifecycle";
 import { createFreeCamera } from "../../../packages/babylon-lite/src/camera/free-camera";
+import { updateAccessibilityNode } from "../../../packages/babylon-lite/src/accessibility/accessibility-tree";
 
 describe("scene accessibility lifecycle", () => {
     it("R5 replaces and clears camera-derived membership from direct assignments and asset containers", async () => {
@@ -158,6 +159,33 @@ describe("scene accessibility lifecycle", () => {
         expect(getAccessibilityNode(adapter, child)?.tag?.name).toBe("Renamed");
         setAccessibilityTag(child, { disabled: true, description: "Disabled" });
         expect(getAccessibilityNode(adapter, child)?.disabled).toBe(true);
+        disposeScene(scene);
+    });
+
+    it.each([
+        ["hidden", "aria-hidden"],
+        ["disabled", "aria-disabled"],
+    ] as const)("H04 rejects source %s metadata that conflicts with authored semantic state before publication", async (state, aria) => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const source = createTransformNode("Authored source");
+        const inherited = createTransformNode("Inherited source");
+        const adapter = createSceneAccessibility(scene, { roots: [source, inherited] });
+        const node = getAccessibilityNode(adapter, source)!;
+        updateAccessibilityNode(adapter.tree, node, { [state]: true });
+        const previousTag = getAccessibilityTag(source);
+        const previousNode = { tag: node.tag, hidden: node.hidden, disabled: node.disabled };
+
+        expect(() => setAccessibilityTag(source, { name: "Rejected", aria: { [aria]: false } })).toThrow(/conflicting/i);
+        expect(getAccessibilityTag(source)).toBe(previousTag);
+        expect(node).toMatchObject(previousNode);
+        expect(adapter._dirty.size).toBe(0);
+        expect(adapter._pending).toBe(false);
+
+        expect(() => setAccessibilityTag(inherited, { name: "Inherited", aria: { [aria]: true } })).not.toThrow();
+        await Promise.resolve();
+        expect(getAccessibilityNode(adapter, inherited)?.tag?.aria?.[aria]).toBe(true);
+        expect(getAccessibilityTag(source)).toBe(previousTag);
+        expect(node).toMatchObject(previousNode);
         disposeScene(scene);
     });
 });

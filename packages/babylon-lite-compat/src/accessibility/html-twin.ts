@@ -57,6 +57,7 @@ export class HTMLTwinRenderer {
     private readonly _previousValidation: Scene["_accessibilityTagChanging"];
     private readonly _validateTag: (node: Node, tag: IAccessibilityTag | null) => void;
     private readonly _onDispose: (scene: Scene) => void;
+    private _refreshPruned?: Set<Node>;
     private _pending = false;
     private _disposed = false;
 
@@ -110,6 +111,9 @@ export class HTMLTwinRenderer {
         _scene._accessibilityTagChanging = this._validateTag;
         this._changed = (node, mutation = "local"): void => {
             this._previous?.(node, mutation);
+            if (this._refreshPruned?.has(node)) {
+                return;
+            }
             const semantic = this._nodes.get(node);
             if (semantic) {
                 if (!this._previousStates.has(node)) {
@@ -241,7 +245,11 @@ export class HTMLTwinRenderer {
         this._sortParents.clear();
     }
 
-    private _remove(source: Node): void {
+    private _remove(source: Node, pruned?: Set<Node>): void {
+        const removedOwners = [source];
+        this._dirty.delete(source);
+        this._dirtySubtrees.delete(source);
+        pruned?.add(source);
         this._previousStates.delete(source);
         this._managers.get(source)?.unsubscribe();
         this._managers.delete(source);
@@ -256,6 +264,12 @@ export class HTMLTwinRenderer {
             pending.push(...node.children);
             const owner = this._sources.get(node);
             if (owner) {
+                if (pruned) {
+                    removedOwners.push(owner);
+                    this._dirty.delete(owner);
+                    this._dirtySubtrees.delete(owner);
+                    pruned.add(owner);
+                }
                 this._managers.get(owner)?.unsubscribe();
                 this._managers.delete(owner);
                 this._nodes.delete(owner);
@@ -264,6 +278,10 @@ export class HTMLTwinRenderer {
             this._orders.delete(node);
         }
         removeAccessibilityNode(this.tree, removed);
+        for (const owner of removedOwners) {
+            this._dirty.delete(owner);
+            this._dirtySubtrees.delete(owner);
+        }
     }
 
     private _update(source: Node): void {
@@ -330,33 +348,47 @@ export class HTMLTwinRenderer {
         }
         this._dirty.clear();
         this._dirtySubtrees.clear();
-        batchAccessibilityUpdates(this.tree, () => {
-            const pending = [...this._scene.meshes, ...this._scene.cameras, ...this._scene.lights, ...(this._options.roots ?? [])];
-            const descendants = new Set<Node>();
-            for (let index = 0; index < pending.length; index++) {
-                const source = pending[index]!;
-                if (descendants.has(source) || source.isDisposed()) {
-                    continue;
+        const previousPruned = this._refreshPruned;
+        const pruned = previousPruned ?? new Set<Node>();
+        this._refreshPruned = pruned;
+        try {
+            batchAccessibilityUpdates(this.tree, () => {
+                const pending = [...this._scene.meshes, ...this._scene.cameras, ...this._scene.lights, ...(this._options.roots ?? [])];
+                const descendants = new Set<Node>();
+                for (let index = 0; index < pending.length; index++) {
+                    const source = pending[index]!;
+                    if (descendants.has(source) || source.isDisposed()) {
+                        continue;
+                    }
+                    descendants.add(source);
+                    pending.push(...source.getChildren());
                 }
-                descendants.add(source);
-                pending.push(...source.getChildren());
-            }
-            const sources = new Set(descendants);
-            for (const source of descendants) {
-                for (let parent = source.parent; parent && !sources.has(parent); parent = parent.parent) {
-                    sources.add(parent);
+                const sources = new Set(descendants);
+                for (const source of descendants) {
+                    for (let parent = source.parent; parent && !sources.has(parent); parent = parent.parent) {
+                        sources.add(parent);
+                    }
                 }
-            }
-            for (const source of sources) {
-                this._update(source);
-            }
-            for (const source of [...this._nodes.keys()]) {
-                if (!sources.has(source)) {
-                    this._remove(source);
+                for (const source of sources) {
+                    pruned.delete(source);
                 }
-            }
-            this._sortChanged();
-        });
+                for (const source of sources) {
+                    this._update(source);
+                }
+                for (const source of [...this._nodes.keys()]) {
+                    if (!sources.has(source)) {
+                        this._remove(source, pruned);
+                    }
+                }
+                this._sortChanged();
+                for (const source of pruned) {
+                    this._dirty.delete(source);
+                    this._dirtySubtrees.delete(source);
+                }
+            });
+        } finally {
+            this._refreshPruned = previousPruned;
+        }
     }
 
     /** Focus a canonical scene wrapper, not a replacement wrapper or generated mesh. */
@@ -389,6 +421,7 @@ export class HTMLTwinRenderer {
         this._orders.clear();
         this._sortParents.clear();
         this._previousStates.clear();
+        this._refreshPruned = undefined;
         for (const entry of this._managers.values()) {
             entry.unsubscribe();
         }

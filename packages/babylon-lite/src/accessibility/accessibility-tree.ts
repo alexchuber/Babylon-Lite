@@ -136,7 +136,7 @@ export function createAccessibilityTree(): AccessibilityTree {
         _roots: roots,
         _nodes: new Set(),
         _listeners: new Set(),
-        _validators: new Set(),
+        _validators: new Set([validateAuthoredState]),
         _disposed: false,
         get disposed() {
             return this._disposed;
@@ -211,7 +211,8 @@ function validateElement(tree: AccessibilityTree, element: HTMLElement | undefin
     }
 }
 
-function validateAuthoredState(options: AccessibilityNodeOptions, tag: AccessibilityTag | null, node?: AccessibilityNode): void {
+function validateAuthoredState(options: AccessibilityNodeOptions, node?: AccessibilityNode): void {
+    const tag = options.tag === undefined ? (node?.tag ?? null) : options.tag;
     for (const [state, aria] of [
         ["hidden", "aria-hidden"],
         ["disabled", "aria-disabled"],
@@ -239,13 +240,15 @@ function localUnavailable(
 export function addAccessibilityNode(tree: AccessibilityTree, options: AccessibilityNodeOptions): AccessibilityNode {
     requireTree(tree, options.parent ?? undefined);
     const tag = _snapshotAccessibilityTag(options.tag);
-    validateAuthoredState(options, tag);
+    validateAuthoredState({ ...options, tag });
     if (options.before && (!tree._nodes.has(options.before) || options.before.parent !== (options.parent ?? null))) {
         throw new Error("Accessibility ordering requires a sibling in the same tree.");
     }
     validateElement(tree, options.element);
     for (const validate of tree._validators) {
-        validate({ ...options, tag });
+        if (validate !== validateAuthoredState) {
+            validate({ ...options, tag });
+        }
     }
     const children: AccessibilityNode[] = [];
     const node: AccessibilityNode = {
@@ -281,7 +284,7 @@ function detach(tree: AccessibilityTree, node: AccessibilityNode): void {
 export function updateAccessibilityNode(tree: AccessibilityTree, node: AccessibilityNode, patch: AccessibilityNodeOptions): void {
     requireTree(tree, node);
     const tag = "tag" in patch ? _snapshotAccessibilityTag(patch.tag) : node.tag;
-    validateAuthoredState(patch, tag, node);
+    validateAuthoredState({ ...patch, tag }, node);
     if (patch.before && (!tree._nodes.has(patch.before) || patch.before.parent !== (patch.parent === undefined ? node.parent : patch.parent))) {
         throw new Error("Accessibility ordering requires a sibling in the same tree.");
     }
@@ -289,7 +292,9 @@ export function updateAccessibilityNode(tree: AccessibilityTree, node: Accessibi
         validateElement(tree, patch.element, node);
     }
     for (const validate of tree._validators) {
-        validate({ ...node, ...patch, tag }, node);
+        if (validate !== validateAuthoredState) {
+            validate({ ...node, ...patch, tag }, node);
+        }
     }
     const reparented = patch.parent !== undefined && patch.parent !== node.parent;
     const availabilityChanged =
