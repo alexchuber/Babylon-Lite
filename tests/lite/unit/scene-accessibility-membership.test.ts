@@ -7,6 +7,48 @@ import { setParent } from "../../../packages/babylon-lite/src/scene/set-parent";
 import { createSceneAccessibility, getAccessibilityNode, setAccessibilityParent } from "../../../packages/babylon-lite/src/accessibility/scene-accessibility";
 
 describe("camera membership boundaries", () => {
+    it.each(["clear", "replace"])("retains pending natural camera dependencies on same-task %s without scanning unrelated roots", async (operation) => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const camera = createFreeCamera({ x: 0, y: 0, z: -5 }, { x: 0, y: 0, z: 0 });
+        const replacement = createFreeCamera({ x: 0, y: 0, z: -10 }, { x: 0, y: 0, z: 0 });
+        const child = createTransformNode("Independent");
+        const group = createTransformNode("Semantic group");
+        const unrelated = createTransformNode("Unrelated");
+        scene.camera = camera;
+        const adapter = createSceneAccessibility(scene, { roots: [child, group, unrelated] });
+        setAccessibilityParent(adapter, camera, group);
+        const cameraNode = getAccessibilityNode(adapter, camera)!;
+        const childNode = getAccessibilityNode(adapter, child)!;
+        const groupNode = getAccessibilityNode(adapter, group)!;
+        let reads = 0;
+        const children = unrelated.children;
+        Object.defineProperty(unrelated, "children", {
+            configurable: true,
+            get: () => {
+                reads++;
+                return children;
+            },
+        });
+        try {
+            setParent(child, camera);
+            scene.camera = operation === "clear" ? null : replacement;
+            expect(getAccessibilityNode(adapter, camera)).toBe(cameraNode);
+            expect(cameraNode.parent).toBe(groupNode);
+            await Promise.resolve();
+            expect(getAccessibilityNode(adapter, camera)).toBe(cameraNode);
+            expect(getAccessibilityNode(adapter, child)).toBe(childNode);
+            expect(childNode.parent).toBe(cameraNode);
+            expect(cameraNode.parent).toBe(groupNode);
+            expect(child.parent).toBe(camera);
+            expect(reads).toBe(0);
+            if (operation === "replace") {
+                expect(getAccessibilityNode(adapter, replacement)).toBeDefined();
+            }
+        } finally {
+            disposeScene(scene);
+        }
+    });
+
     it("retains a cleared camera that is still the explicit semantic parent of an independent node", () => {
         const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
         const camera = createFreeCamera({ x: 0, y: 0, z: -5 }, { x: 0, y: 0, z: 0 });
