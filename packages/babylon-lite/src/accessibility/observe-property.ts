@@ -1,71 +1,81 @@
-interface PropertyWatch {
+interface PropertyObserver {
+    descriptor: PropertyDescriptor | undefined;
+    value: unknown;
     listeners: Set<() => void>;
-    restore: () => void;
 }
 
-let watches: WeakMap<object, Map<PropertyKey, PropertyWatch>> | undefined;
+let observations: WeakMap<object, Map<PropertyKey, PropertyObserver>> | undefined;
 
-/** @internal Reversible, shared observation. Property accessors never capture subscribers or scenes. */
-export function observeProperty(target: object, key: PropertyKey, listener: () => void): () => void {
-    const registry = (watches ??= new WeakMap());
-    let properties = registry.get(target);
-    if (!properties) {
-        properties = new Map();
-        registry.set(target, properties);
+function descriptorOf(target: object, key: PropertyKey): PropertyDescriptor | undefined {
+    for (let current: object | null = target; current; current = Object.getPrototypeOf(current) as object | null) {
+        const descriptor = Object.getOwnPropertyDescriptor(current, key);
+        if (descriptor) {
+            return descriptor;
+        }
     }
-    let watch = properties.get(key);
-    if (!watch) {
+    return undefined;
+}
+
+/** @internal Observe direct writes and restore the original property shape after the last listener leaves. */
+export function observeProperty(target: object, key: PropertyKey, listener: () => void): () => void {
+    const byProperty = (observations ??= new WeakMap()).get(target) ?? new Map<PropertyKey, PropertyObserver>();
+    observations.set(target, byProperty);
+    let observer = byProperty.get(key);
+    if (!observer) {
         const own = Object.getOwnPropertyDescriptor(target, key);
-        let descriptor = own;
-        for (let prototype: object | null = Object.getPrototypeOf(target); !descriptor && prototype; prototype = Object.getPrototypeOf(prototype)) {
-            descriptor = Object.getOwnPropertyDescriptor(prototype, key);
+        const descriptor = own ?? descriptorOf(Object.getPrototypeOf(target) as object, key);
+        if (own && !own.configurable) {
+            return () => {};
         }
-        if (own?.configurable === false || (descriptor && ("value" in descriptor ? descriptor.writable === false : !descriptor.set))) {
-            throw new Error(`Cannot observe read-only accessibility property ${String(key)}.`);
-        }
-        let value: unknown = Reflect.get(target, key);
-        const read = (): unknown => (descriptor?.get ? descriptor.get.call(target) : value);
-        const write = (next: unknown): void => {
-            const previous = read();
-            if (descriptor?.set) {
-                descriptor.set.call(target, next);
-            } else {
-                value = next;
-            }
-            if (read() !== previous) {
-                for (const callback of watches?.get(target)?.get(key)?.listeners ?? []) {
-                    callback();
-                }
-            }
-        };
-        Object.defineProperty(target, key, { configurable: true, enumerable: own?.enumerable ?? true, get: read, set: write });
-        watch = {
+        observer = {
+            descriptor: own,
+            value: descriptor?.get ? descriptor.get.call(target) : (own?.value ?? (target as Record<PropertyKey, unknown>)[key]),
             listeners: new Set(),
-            restore: () => {
-                if (Object.getOwnPropertyDescriptor(target, key)?.get !== read) {
-                    return;
-                }
-                if (own) {
-                    Object.defineProperty(target, key, "value" in own ? { ...own, value: read() } : own);
+        };
+        const state = observer;
+        Object.defineProperty(target, key, {
+            configurable: true,
+            enumerable: own?.enumerable ?? true,
+            get: descriptor?.get ? () => descriptor.get!.call(target) : () => state.value,
+            set: (value: unknown) => {
+                const previous = descriptor?.get ? descriptor.get.call(target) : state.value;
+                if (descriptor?.set) {
+                    descriptor.set.call(target, value);
                 } else {
-                    Reflect.deleteProperty(target, key);
-                    if (!descriptor?.set && value !== undefined) {
-                        Reflect.set(target, key, value);
+                    state.value = value;
+                }
+                const next = descriptor?.get ? descriptor.get.call(target) : state.value;
+                if (next !== previous) {
+                    for (const callback of [...state.listeners]) {
+                        callback();
                     }
                 }
             },
-        };
-        properties.set(key, watch);
+        });
+        byProperty.set(key, observer);
     }
-    watch.listeners.add(listener);
+    observer.listeners.add(listener);
     return () => {
-        watch.listeners.delete(listener);
-        if (watch.listeners.size === 0) {
-            watch.restore();
-            properties.delete(key);
-            if (properties.size === 0) {
-                registry.delete(target);
+        observer!.listeners.delete(listener);
+        if (observer!.listeners.size) {
+            return;
+        }
+        const current = (target as Record<PropertyKey, unknown>)[key];
+        if (observer!.descriptor) {
+            const restored = { ...observer!.descriptor };
+            if ("value" in restored) {
+                restored.value = current;
             }
+            Object.defineProperty(target, key, restored);
+        } else {
+            delete (target as Record<PropertyKey, unknown>)[key];
+            if (current !== undefined) {
+                Object.defineProperty(target, key, { configurable: true, enumerable: true, writable: true, value: current });
+            }
+        }
+        byProperty.delete(key);
+        if (!byProperty.size) {
+            observations?.delete(target);
         }
     };
 }

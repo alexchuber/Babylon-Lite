@@ -1,5 +1,4 @@
 import type { EngineContext, RenderingContext } from "../engine/engine.js";
-import { sceneNodeChanged, sceneAnimationOverride, sceneDisposeOverride } from "./scene-lifecycle.js";
 import { _vis, isRenderingContextRegistered, registerRenderingContext, unregisterRenderingContext } from "../engine/engine.js";
 import type { SurfaceContext } from "../engine/surface.js";
 import type { Camera } from "../camera/camera.js";
@@ -263,6 +262,11 @@ export interface SceneContext extends RenderingContext {
     _flowGraphPointerCleanup?: () => void;
     /** @internal Refreshes the explicitly enabled Flow Graph pointer bridge. */
     _flowGraphPointerRefresh?: () => void;
+    /** @internal Optional passive accessibility projection installed by the accessibility module. */
+    _accessibility?: {
+        nodeChanged(node: unknown, added: boolean): void;
+        dispose(): void;
+    };
 }
 
 /** Options passed to the scene-context factory. */
@@ -436,12 +440,8 @@ export function addToScene(scene: SceneContext, entity: Mesh | LightBase | Camer
         if (result.animationGroups?.length) {
             const engine = ctx.surface.engine;
             const groups = result.animationGroups;
-            const callbacks = ctx._beforeRender;
             ctx.animationGroups.push(...groups);
             const hook = (deltaMs: number): void => {
-                if (sceneAnimationOverride?.(callbacks)) {
-                    return;
-                }
                 for (const g of groups) {
                     tickAnimation(g, deltaMs, engine);
                 }
@@ -493,7 +493,7 @@ export function addToScene(scene: SceneContext, entity: Mesh | LightBase | Camer
     } else if ("lightType" in entity) {
         ctx.lights.push(entity as LightBase);
     }
-    sceneNodeChanged?.(ctx, entity, true);
+    ctx._accessibility?.nodeChanged(entity, true);
     // Recurse into children of meshes, lights, cameras — set parent links
     const kids = (entity as unknown as SceneNode).children;
     if (kids?.length) {
@@ -511,10 +511,11 @@ export function disposeScene(scene: SceneContext): void {
         return;
     }
     ctx._z = true;
+    ctx._accessibility?.dispose();
     const lateCleanup = (_lateCleanup ??= new WeakMap());
     lateCleanup.set(ctx, () => 1);
+    unregisterRenderingContext(ctx.surface, ctx);
     const cleanup = (): void => {
-        unregisterRenderingContext(ctx.surface, ctx);
         lateCleanup.set(ctx, () => {
             for (const fns of ctx._meshDisposables.values()) {
                 fns.forEach((dispose) => dispose());
@@ -555,11 +556,7 @@ export function disposeScene(scene: SceneContext): void {
         ctx.shadowGenerators.length = 0;
         ctx.camera = null;
     };
-    if (sceneDisposeOverride) {
-        sceneDisposeOverride(ctx, cleanup);
-    } else {
-        cleanup();
-    }
+    cleanup();
 }
 
 /** @internal Run all deferred builders (called by registerScene's boot step before the first frame). */

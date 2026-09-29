@@ -29,6 +29,7 @@ Babylon Lite is a ground-up rethink of a 3D engine for the modern web. A few ide
 - **No classes — pure data + functions.** Cameras, lights, meshes, and materials are plain state objects. Behavior lives in standalone, tree-shakable functions like `getViewMatrix(camera)` and `addToScene(scene, entity)`. Nothing carries hidden references, which means trivial serialization, zero circular dependencies, and maximum dead-code elimination.
 - **Obsessively tree-shakable.** Every optional feature is an isolated module, dynamically imported only when a scene actually uses it. **Unused features cost zero bytes.** A simple scene ships a handful of KB; a complex PBR + IBL scene only pays for what it touches.
 - **Modern toolchain.** Built on Vite, with WGSL shader minification in production bundles and strict, modern TypeScript throughout.
+- **Passive accessibility metadata.** Optional scene tags and an HTML twin expose names, descriptions, roles, and ARIA without adding scene interaction. See [Passive scene accessibility](06-accessibility.md).
 
 ### Visually compatible — pixel-perfect with Babylon.js
 
@@ -229,7 +230,6 @@ And just as importantly: we want to **hear from you** — what's missing, what y
 - 📊 **[Feature Comparison](02-feature-comparison.md)** — the full Lite-vs-Babylon.js feature matrix, so you can see exactly what's covered, partial, or missing.
 - 🧱 **[Architecture docs](architecture/00-overview.md)** — deep dives into the engine internals.
 - 🧪 **[Headless (Null Engine)](05-headless-null-engine.md)** — run Lite without a GPU for server-side physics and deterministic simulation.
-- [Add accessible scene controls](06-accessibility.md) — expose meaningful scene objects, native HTML controls, and animation/audio controls without Babylon GUI.
 - 🌐 **[github.com/BabylonJS/Babylon-Lite](https://github.com/BabylonJS/Babylon-Lite)** — explore the code, browse the scene gallery, and follow along with development.
 
 Star the repo, open an issue, and tell us what you'd want before reaching for Lite. **Two engines, one family, moving forward together** — pick the one that fits your project, and switch between them knowing the pixels won't change. 💙

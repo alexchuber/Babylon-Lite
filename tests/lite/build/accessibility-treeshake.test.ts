@@ -1,43 +1,60 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { cleanupTempDirs, ensureLibBuilt, LIB_ENTRY, runRollup } from "./bundler-harness";
+import { beforeAll, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { ensureLibBuilt, LIB_ENTRY, PACKAGE_DIR, runRollup } from "./bundler-harness";
 
-afterAll(cleanupTempDirs);
-beforeAll(ensureLibBuilt);
+beforeAll(ensureLibBuilt, 300_000);
 
-describe("accessibility tree shaking", () => {
-    it("retains no accessibility implementation when unused", async () => {
+describe("passive accessibility package boundary", () => {
+    it("removes unused accessibility imports without changing the bundle", async () => {
         const baseline = await runRollup({
-            entrySource: `import { createSceneContext, addToScene } from ${JSON.stringify(LIB_ENTRY)}; console.log(createSceneContext, addToScene);`,
+            entrySource: `import { createSceneContext } from ${JSON.stringify(LIB_ENTRY)}; console.log(createSceneContext);`,
             format: "es",
             minify: false,
         });
-        const result = await runRollup({
-            entrySource: `import { createSceneContext, addToScene, createSceneHtmlTwin, createNativeControl, createHtmlOverlay, createHtmlTwin, setSceneAnimationsEnabled } from ${JSON.stringify(LIB_ENTRY)}; console.log(createSceneContext, addToScene);`,
+        const withUnusedAccessibility = await runRollup({
+            entrySource: `import { createSceneContext, createSceneHtmlTwin, setAccessibilityTag } from ${JSON.stringify(LIB_ENTRY)};
+console.log(createSceneContext);`,
             format: "es",
             minify: false,
         });
-        expect(result.errors).toEqual([]);
-        expect(result.significantWarnings).toEqual([]);
-        expect(result.code).toBe(baseline.code);
-        expect(result.code).not.toContain("lite-accessibility");
-        expect(result.code).not.toContain("sceneObservers");
-        expect(result.code).not.toContain("elementOwners");
-        expect(result.code).not.toContain("sceneNodeChanged");
-        expect(result.code).not.toContain("sceneAnimationOverride");
+
+        expect(baseline.errors).toEqual([]);
+        expect(withUnusedAccessibility.errors).toEqual([]);
+        expect(withUnusedAccessibility.code).toBe(baseline.code);
     });
 
-    it("keeps renderer-independent controls free of scene, projection, and GPU implementations", async () => {
+    it("retains the passive DOM only when requested", async () => {
         const result = await runRollup({
-            entrySource: `import { createAccessibilityTree, createHtmlTwin, createNativeControl, createHtmlOverlay } from ${JSON.stringify(LIB_ENTRY)}; console.log(createAccessibilityTree, createHtmlTwin, createNativeControl, createHtmlOverlay);`,
+            entrySource: `import { createSceneHtmlTwin } from ${JSON.stringify(LIB_ENTRY)}; console.log(createSceneHtmlTwin);`,
             format: "es",
             minify: false,
         });
+
         expect(result.errors).toEqual([]);
         expect(result.significantWarnings).toEqual([]);
-        expect(result.code).toContain("lite-accessibility");
-        expect(result.code).not.toContain("createSceneContext");
-        expect(result.code).not.toContain("getViewProjectionMatrix");
-        expect(result.code).not.toContain("createRenderPipeline");
-        expect(result.code).not.toContain("requestAdapter");
+        expect(result.code).toContain("data-lite-accessibility-node");
+        expect(result.code).not.toContain("addEventListener");
+        expect(result.code).not.toContain("tabIndex");
+    });
+
+    it("exports the passive contract and omits retired interaction APIs", () => {
+        const declarations = readFileSync(resolve(PACKAGE_DIR, "build/index.d.ts"), "utf-8");
+        for (const name of ["AccessibilityTag", "createSceneAccessibility", "setAccessibilityTag", "createSceneHtmlTwin", "createHtmlTwin"]) {
+            expect(declarations).toMatch(new RegExp(`\\b${name}\\b`));
+        }
+        for (const name of [
+            "eventHandler",
+            "tabIndex",
+            "focusHtmlTwinNode",
+            "blurHtmlTwin",
+            "showSceneFocusIndicator",
+            "createNativeControl",
+            "createHtmlOverlay",
+            "bindAnimationManagerToScene",
+            "setSceneAnimationsEnabled",
+        ]) {
+            expect(declarations).not.toMatch(new RegExp(`\\b${name}\\b`));
+        }
     });
 });

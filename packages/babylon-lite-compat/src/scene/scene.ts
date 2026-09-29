@@ -34,8 +34,6 @@ import {
     invertMat4,
     multiplyMat4,
     onPhysicsAfterStep,
-    getSceneAnimationsEnabled,
-    setSceneAnimationsEnabled,
 } from "babylon-lite";
 import type {
     SceneContext,
@@ -72,8 +70,6 @@ import { Vector3 } from "../math/vector.js";
 import { PickingInfo } from "../culling/picking-info.js";
 import { AbstractMesh, Mesh } from "../meshes/meshes.js";
 import { PointerEventTypes, PointerInfo } from "../events/pointer-events.js";
-import { attachActionManagerKeyboard } from "../actions/actions.js";
-import type { ActionManager } from "../actions/actions.js";
 
 /** Babylon.js EnvironmentHelper default skybox/ground assets (match the Lite ports). */
 const DEFAULT_SKYBOX_URL = "https://assets.babylonjs.com/core/environments/backgroundSkybox.dds";
@@ -140,30 +136,6 @@ export class Scene extends AbstractScene {
     private _pointerEventTarget: EventTarget | null = null;
     /** @internal Shared listener registered for each supported DOM pointer event. */
     private _pointerEventListener: EventListener | null = null;
-    private _actionManager: ActionManager | null = null;
-    private _detachActionKeyboard?: () => void;
-
-    /** Scene key actions are scoped to the rendering canvas, never the document. */
-    public get actionManager(): ActionManager | null {
-        return this._actionManager;
-    }
-
-    public set actionManager(manager: ActionManager | null) {
-        if (this._lite._z) {
-            throw new Error("Cannot assign actions to a disposed scene.");
-        }
-        const canvas = this._engine.getRenderingCanvas();
-        let detach: (() => void) | undefined;
-        if (manager?.isDisposed()) {
-            throw new Error("Cannot assign a disposed action manager to a scene.");
-        }
-        if (manager && canvas && "ownerDocument" in canvas && typeof canvas.addEventListener === "function") {
-            detach = attachActionManagerKeyboard(manager, canvas, this);
-        }
-        this._detachActionKeyboard?.();
-        this._detachActionKeyboard = detach;
-        this._actionManager = manager;
-    }
 
     /**
      * Babylon.js `scene.animationGroups` / `scene.animatables`. Loaded glTF /
@@ -191,15 +163,6 @@ export class Scene extends AbstractScene {
 
     public get animatables(): Animatable[] {
         return this._runningAnimatables;
-    }
-
-    /** Whether this scene's animations advance. Disabled time is never replayed on resume. */
-    public get animationsEnabled(): boolean {
-        return getSceneAnimationsEnabled(this._lite);
-    }
-
-    public set animationsEnabled(enabled: boolean) {
-        setSceneAnimationsEnabled(this._lite, enabled);
     }
 
     private readonly _engine: WebGPUEngine;
@@ -330,20 +293,6 @@ export class Scene extends AbstractScene {
         // observers) reflects the current frame.
         this._engine._lastDeltaMs = deltaMs;
         this.onBeforeAnimationsObservable.notifyObservers(this);
-        if (this.animationsEnabled) {
-            this._tickAnimations(deltaMs);
-        }
-        if (this._renderedAFrame) {
-            this.onAfterRenderObservable.notifyObservers(this);
-        }
-        this._renderedAFrame = true;
-        this.onBeforeRenderObservable.notifyObservers(this);
-        for (const callback of this._beforeRenderFlushCallbacks) {
-            callback();
-        }
-    }
-
-    private _tickAnimations(deltaMs: number): void {
         if (this._blendManager) {
             updateAnimationManager(this._blendManager, deltaMs);
         }
@@ -358,6 +307,14 @@ export class Scene extends AbstractScene {
                 g._advanceStructural(deltaMs);
             }
             AnimationGroup._blendStructuralGroups(this._structuralGroups);
+        }
+        if (this._renderedAFrame) {
+            this.onAfterRenderObservable.notifyObservers(this);
+        }
+        this._renderedAFrame = true;
+        this.onBeforeRenderObservable.notifyObservers(this);
+        for (const callback of this._beforeRenderFlushCallbacks) {
+            callback();
         }
     }
 
@@ -1262,9 +1219,6 @@ export class Scene extends AbstractScene {
         };
 
         runCleanup(() => this._detachPointerEvents());
-        runCleanup(() => this._detachActionKeyboard?.());
-        this._detachActionKeyboard = undefined;
-        this._actionManager = null;
         const observerResult = this.onDisposeObservable._notifyObserversSafely(this);
         if (observerResult.hasError && !hasError) {
             hasError = true;

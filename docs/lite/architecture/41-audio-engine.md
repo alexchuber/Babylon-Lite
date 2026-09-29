@@ -318,44 +318,33 @@ Other deltas:
   `setSoundSourceVolume(...)`, and `disposeSoundSource(...)`, returning an
   `AudioInputSource` handle (the design's `MicrophoneSound` was folded into
   this).
-- **Unmute UI.** `createUnmuteUI(engine, { parentElement?, label?, onError? })` plus
+- **Unmute UI.** `createUnmuteUI(engine, { parentElement? })` plus
   `setUnmuteUIEnabled(ui, enabled)` and `disposeUnmuteUI(ui)` (capitalized `UI`,
-  and a richer handle than `{ dispose() }`). `label?: string` supplies a localized
-  accessible name; omitted or whitespace-only values fall back to `"Enable audio"`.
-  The icon control is a native `button` with `type="button"` so it cannot submit an
-  enclosing form. Its `aria-label` is the trimmed label, and `:focus-visible`
-  adds a contrasting outline. Enter/Space activation uses the button's native
-  click behavior, with no separate keyboard handler or duplicate audio unlock.
-  Pending unlock disables the button and sets `aria-busy`; completion restores
-  its state. Failures call `onError` when supplied, otherwise the owner window's
-  `reportError` or a queued throw. The button and style use the parent's document,
-  and each button has no fixed ID. Disposal removes the click listener and state
-  subscription, including while an unlock request is pending.
+  and a richer handle than `{ dispose() }`).
 - **Media-stream output (Lite-only).** The final post-master mix can be mirrored
   into browser media pipelines without affecting speaker output:
 
-    ```typescript
-    export interface AudioEngineMediaStream {
-        readonly stream: MediaStream;
-        /** @internal */ readonly _engine: AudioEngine;
-        /** @internal */ readonly _source: GainNode;
-        /** @internal */ readonly _destination: MediaStreamAudioDestinationNode;
-        /** @internal */ readonly _engineDisposer: () => void;
-        /** @internal */ _registered: boolean;
-        /** @internal */ _disposed: boolean;
-        /** @internal */ _dispose(): void;
-    }
+  ```typescript
+  export interface AudioEngineMediaStream {
+      readonly stream: MediaStream;
+      /** @internal */ readonly _engine: AudioEngine;
+      /** @internal */ readonly _source: GainNode;
+      /** @internal */ readonly _destination: MediaStreamAudioDestinationNode;
+      /** @internal */ readonly _engineDisposer: () => void;
+      /** @internal */ _registered: boolean;
+      /** @internal */ _disposed: boolean;
+      /** @internal */ _dispose(): void;
+  }
 
-    export function createAudioEngineMediaStream(engine: AudioEngine): AudioEngineMediaStream;
-    export function disposeAudioEngineMediaStream(output: AudioEngineMediaStream): void;
-    ```
+  export function createAudioEngineMediaStream(engine: AudioEngine): AudioEngineMediaStream;
+  export function disposeAudioEngineMediaStream(output: AudioEngineMediaStream): void;
+  ```
 
-    Creation requires a real-time `AudioContext`, connects a
-    `MediaStreamAudioDestinationNode` in parallel with the audible destination,
-    and registers idempotent engine-owned cleanup. Disposal disconnects only this
-    tap, stops every track in its stream, and unregisters the engine cleanup
-    closure so repeated recording sessions do not accumulate retained handles.
-
+  Creation requires a real-time `AudioContext`, connects a
+  `MediaStreamAudioDestinationNode` in parallel with the audible destination,
+  and registers idempotent engine-owned cleanup. Disposal disconnects only this
+  tap, stops every track in its stream, and unregisters the engine cleanup
+  closure so repeated recording sessions do not accumulate retained handles.
 - **Visualizer (Lite-only, no AudioV2 counterpart).** A small canvas-2D
   waveform/bars helper for the demo and manual use:
   `createAudioVisualizer(host, canvas, options?)`,

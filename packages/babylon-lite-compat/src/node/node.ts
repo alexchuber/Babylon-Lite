@@ -18,13 +18,9 @@ import { Vector3 } from "../math/vector.js";
 import { Observable } from "../misc/observable.js";
 import { getAccessibilityTag, setAccessibilityTag } from "babylon-lite";
 import type { AccessibilityTag } from "babylon-lite";
-import type { ActionManager } from "../actions/actions.js";
 
-/** Babylon-shaped semantic metadata, including Lite's explicit hidden/disabled state. */
-export interface IAccessibilityTag extends Omit<AccessibilityTag, "tabIndex"> {
-    /** Positive values order controls locally; the DOM still uses tabindex 0. */
-    tabIndex?: number;
-}
+/** Babylon-compatible descriptive accessibility metadata. */
+export interface IAccessibilityTag extends AccessibilityTag {}
 
 let _uniqueIdCounter = 0;
 
@@ -45,33 +41,17 @@ export abstract class Node {
     public metadata: unknown = null;
     public readonly onDisposeObservable = new Observable<Node>();
     private _tagChanged?: Observable<IAccessibilityTag | null>;
-    private _actionManager: ActionManager | null = null;
-    /** @internal */
-    public _accessibilityTabOrder?: number;
 
     public get accessibilityTag(): IAccessibilityTag | null {
-        const tag = getAccessibilityTag(this);
-        return tag && this._accessibilityTabOrder !== undefined ? Object.freeze({ ...tag, tabIndex: this._accessibilityTabOrder }) : tag;
+        return getAccessibilityTag(this);
     }
     public set accessibilityTag(tag: IAccessibilityTag | null) {
-        if (tag?.tabIndex !== undefined && (!Number.isInteger(tag.tabIndex) || tag.tabIndex < -1)) {
-            throw new RangeError("Accessibility tabIndex must be an integer greater than or equal to -1.");
-        }
-        this._scene?._accessibilityTagChanging?.(this, tag);
-        setAccessibilityTag(this, tag ? { ...tag, tabIndex: tag.tabIndex === undefined ? undefined : tag.tabIndex < 0 ? -1 : 0 } : null);
-        this._accessibilityTabOrder = tag?.tabIndex;
+        setAccessibilityTag(this, tag);
         this._tagChanged?.notifyObservers(this.accessibilityTag);
         this._scene?._accessibilityNodeChanged?.(this);
     }
     public get onAccessibilityTagChangedObservable(): Observable<IAccessibilityTag | null> {
         return (this._tagChanged ??= new Observable());
-    }
-    public get actionManager(): ActionManager | null {
-        return this._actionManager;
-    }
-    public set actionManager(manager: ActionManager | null) {
-        this._actionManager = manager;
-        this._scene?._accessibilityNodeChanged?.(this, "subtree");
     }
 
     /** @internal Owning compat scene, when constructed against one. */
@@ -92,7 +72,6 @@ export abstract class Node {
         this.id = name;
         this.uniqueId = ++_uniqueIdCounter;
         this._scene = scene;
-        scene?._accessibilityNodeChanged?.(this);
     }
 
     /** The runtime class name (overridden by each subclass). */
@@ -137,7 +116,8 @@ export abstract class Node {
         if (value && !value._children.includes(this)) {
             value._children.push(this);
         }
-        this._syncParentEnabledState(true);
+        this._syncParentEnabledState();
+        this._scene?._accessibilityNodeChanged?.(this);
     }
 
     /** @internal Whether this node is an `AbstractMesh` (overridden there) — drives `getChildMeshes`. */
@@ -223,13 +203,13 @@ export abstract class Node {
     }
 
     /** @internal Refresh this subtree after a local enabled or parent change. */
-    protected _syncParentEnabledState(subtree = false): void {
+    protected _syncParentEnabledState(): void {
         this._parentEnabled = this._parent?.isEnabled() ?? true;
         this._onEffectiveEnabledStateChanged(this.isEnabled());
         for (const child of this._children) {
             child._syncParentEnabledState();
         }
-        this._scene?._accessibilityNodeChanged?.(this, subtree ? "subtree" : "local");
+        this._scene?._accessibilityNodeChanged?.(this);
     }
 
     /** @internal Hook for wrappers that must materialize effective enabled state in Lite. */

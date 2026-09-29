@@ -47,8 +47,6 @@ export { UniformBuffer } from "./materials/uniform-buffer.js";
 // ─── Scene graph ─────────────────────────────────────────────────────
 export { Node } from "./node/node.js";
 export type { IAccessibilityTag } from "./node/node.js";
-export { HTMLTwinRenderer } from "./accessibility/html-twin.js";
-export type { IHTMLTwinRendererOptions } from "./accessibility/html-twin.js";
 export { AbstractScene } from "./scene/abstract-scene.js";
 export { Scene } from "./scene/scene.js";
 export { PointerEventTypes, PointerInfo } from "./events/pointer-events.js";
@@ -253,9 +251,9 @@ export {
     PredicateCondition,
     ValueConditionOperators,
     ActionManagerTriggers,
-    attachActionManagerKeyboard,
 } from "./actions/actions.js";
-export type { ActionEvent, ActionTriggerOptions } from "./actions/actions.js";
+export { HTMLTwinRenderer } from "./accessibility/html-twin.js";
+export type { IHTMLTwinRendererOptions } from "./accessibility/html-twin.js";
 
 // ─── Audio (AudioV2) ─────────────────────────────────────────────────
 export { SoundState, AudioParameterRampShape, SpatialAudioAttachmentType } from "./audio/audio-enums.js";

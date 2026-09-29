@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { attachConfigurableFreeControl } from "../../../packages/babylon-lite/src/camera/configurable-free-camera-controls";
-import { attachFreeControl } from "../../../packages/babylon-lite/src/camera/free-camera-controls";
 import { createFreeCamera } from "../../../packages/babylon-lite/src/camera/free-camera";
 import type { SceneContext } from "../../../packages/babylon-lite/src/scene/scene-core";
 
@@ -25,24 +24,6 @@ function createCanvasFixture() {
 }
 
 describe("free camera controls", () => {
-    it.each([
-        ["default", attachFreeControl],
-        ["configurable", attachConfigurableFreeControl],
-    ] as const)("%s controls release held keys when focus leaves the canvas", (_name, attach) => {
-        const camera = createFreeCamera({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 });
-        camera.inertia = 0;
-        const scene = { _beforeRender: [] } as unknown as SceneContext;
-        const { canvas, emitKey, listeners } = createCanvasFixture();
-        const cleanup = attach(camera, canvas, scene);
-        emitKey("keydown", "KeyW");
-        scene._beforeRender[0]!(100);
-        const position = camera.position.z;
-        listeners.get("blur")?.(new Event("blur"));
-        scene._beforeRender[0]!(100);
-        expect(camera.position.z).toBe(position);
-        cleanup();
-        expect(listeners.size).toBe(0);
-    });
     it("applies custom vertical keys and a held-key speed multiplier", () => {
         const camera = createFreeCamera({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 });
         camera.speed = 1;

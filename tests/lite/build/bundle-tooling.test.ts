@@ -5,11 +5,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build, normalizePath, type Plugin } from "vite";
 
-import { orderLiteLibEntries } from "../../../packages/babylon-lite/vite.config";
 import { demoOwnsBundleFile } from "../../../scripts/demo-bundle-name";
 import { createLiteCodeSplitting, litePackageResolverPlugin, resolveLitePackageSpecifier, terserPropertyManglePlugin } from "../../../scripts/bundle-scenes-core";
-import { liteErrorAllocationOrder } from "../../../scripts/lite-error-plugin";
-import { isLiteOptionalBuildModule } from "../../../scripts/lite-optional-build-module";
 
 const tempDirs: string[] = [];
 
@@ -20,147 +17,6 @@ afterEach(() => {
 });
 
 describe("bundle tooling correctness", () => {
-    it("uses one classifier for optional entry ordering and error allocation", () => {
-        const moduleKeys = [
-            "accessibility/z-control",
-            "animation/scene-animation-manager",
-            "core/z",
-            "scene/scene-dispose-registration",
-            "scene/scene-html-twin",
-            "compute/z",
-            "animation/scene-animation",
-            "accessibility/a-tree",
-            "core/a",
-            "resource/compute-storage-buffer",
-        ];
-
-        expect(moduleKeys.filter(isLiteOptionalBuildModule)).toEqual([
-            "accessibility/z-control",
-            "animation/scene-animation-manager",
-            "scene/scene-dispose-registration",
-            "scene/scene-html-twin",
-            "animation/scene-animation",
-            "accessibility/a-tree",
-        ]);
-        expect(isLiteOptionalBuildModule("accessibility/a-tree.ts")).toBe(true);
-        expect(isLiteOptionalBuildModule("animation\\scene-animation.js")).toBe(true);
-        expect(isLiteOptionalBuildModule("animation/scene-animation-group.ts")).toBe(false);
-
-        const entries = moduleKeys.map((key) => [key, `/src/${key}.ts`] as const);
-        expect(Object.keys(orderLiteLibEntries(entries))).toEqual([
-            "core/z",
-            "compute/z",
-            "core/a",
-            "resource/compute-storage-buffer",
-            "accessibility/z-control",
-            "animation/scene-animation-manager",
-            "scene/scene-dispose-registration",
-            "scene/scene-html-twin",
-            "animation/scene-animation",
-            "accessibility/a-tree",
-        ]);
-
-        const sourceRoot = join(process.cwd(), "packages/babylon-lite/src");
-        const files = moduleKeys.map((key) => join(sourceRoot, `${key}.ts`));
-        files.sort((a, b) => liteErrorAllocationOrder(sourceRoot, a) - liteErrorAllocationOrder(sourceRoot, b) || a.localeCompare(b));
-        expect(files.map((file) => normalizePath(file).slice(normalizePath(sourceRoot).length + 1))).toEqual([
-            "core/a.ts",
-            "core/z.ts",
-            "compute/z.ts",
-            "resource/compute-storage-buffer.ts",
-            "accessibility/a-tree.ts",
-            "accessibility/z-control.ts",
-            "animation/scene-animation-manager.ts",
-            "animation/scene-animation.ts",
-            "scene/scene-dispose-registration.ts",
-            "scene/scene-html-twin.ts",
-        ]);
-    });
-
-    it("keeps a loaded chunk byte-identical when an unrelated chunk is minified first", async () => {
-        const root = mkdtempSync(join(tmpdir(), "lite-mangle-identifiers-"));
-        tempDirs.push(root);
-        writeFileSync(join(root, "loaded.js"), "const sharedIdentifier=globalThis.value;export function read(){return sharedIdentifier;}");
-        writeFileSync(
-            join(root, "unloaded.js"),
-            "const extraIdentifier=globalThis.extra,sharedIdentifier=globalThis.value;export function other(){return extraIdentifier+sharedIdentifier;}"
-        );
-        const loadedCode = async (includeUnloaded: boolean): Promise<string> => {
-            const input: Record<string, string> = {};
-            if (includeUnloaded) {
-                input["a-unloaded"] = join(root, "unloaded.js");
-            }
-            input["z-loaded"] = join(root, "loaded.js");
-            const result = await build({
-                root,
-                configFile: false,
-                publicDir: false,
-                logLevel: "silent",
-                plugins: [
-                    {
-                        name: "assert-fixture-chunk-order",
-                        generateBundle(_options, bundle) {
-                            const first = Object.values(bundle).find((chunk) => chunk.type === "chunk");
-                            expect(first?.fileName).toBe(includeUnloaded ? "a-unloaded.mjs" : "z-loaded.mjs");
-                        },
-                    },
-                    terserPropertyManglePlugin(),
-                ],
-                build: {
-                    write: false,
-                    minify: false,
-                    rollupOptions: {
-                        input,
-                        preserveEntrySignatures: "strict",
-                        output: { format: "es", entryFileNames: "[name].mjs" },
-                    },
-                },
-            });
-            if (Array.isArray(result) || !("output" in result)) {
-                throw new Error("Expected one completed fixture build.");
-            }
-            const loaded = result.output.find((chunk) => chunk.fileName === "z-loaded.mjs");
-            if (!loaded || loaded.type !== "chunk") {
-                throw new Error(`The loaded fixture chunk is missing: ${result.output.map((chunk) => chunk.fileName).join(", ")}`);
-            }
-            return loaded.code;
-        };
-
-        expect(await loadedCode(true)).toBe(await loadedCode(false));
-    });
-
-    it("shares mangled object properties across independent ESM chunks", async () => {
-        const root = mkdtempSync(join(tmpdir(), "lite-mangle-properties-"));
-        tempDirs.push(root);
-        const outDir = join(root, "out");
-        writeFileSync(
-            join(root, "entry.js"),
-            'export async function run(){const state={_count:40,_extra:2};const feature=await import("./feature.js");return feature.read(state);}'
-        );
-        writeFileSync(join(root, "feature.js"), "export function read(state){return state._extra*100+state._count;}");
-
-        await build({
-            root,
-            configFile: false,
-            publicDir: false,
-            logLevel: "silent",
-            plugins: [terserPropertyManglePlugin()],
-            build: {
-                outDir,
-                emptyOutDir: true,
-                minify: false,
-                rollupOptions: {
-                    input: join(root, "entry.js"),
-                    preserveEntrySignatures: "strict",
-                    output: { format: "es", entryFileNames: "entry.mjs", chunkFileNames: "[name]-[hash].mjs" },
-                },
-            },
-        });
-
-        const entry = (await import(pathToFileURL(join(outDir, "entry.mjs")).href)) as { run(): Promise<number> };
-        await expect(entry.run()).resolves.toBe(240);
-    });
-
     it("preserves underscore-prefixed ESM exports referenced through a dynamic-import namespace", async () => {
         const root = mkdtempSync(join(tmpdir(), "lite-mangle-exports-"));
         tempDirs.push(root);

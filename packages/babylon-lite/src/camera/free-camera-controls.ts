@@ -68,10 +68,6 @@ export function attachFreeControl(camera: FreeCamera, canvas: HTMLCanvasElement,
         keys.delete(e.code);
     }
 
-    function clearKeys(): void {
-        keys.clear();
-    }
-
     // ─── Per-frame update (receives deltaMs from engine render loop) ─────
     function update(deltaMs: number): void {
         // BJS speed formula: speed * sqrt(deltaTime / (fps * 100))
@@ -168,7 +164,6 @@ export function attachFreeControl(camera: FreeCamera, canvas: HTMLCanvasElement,
     canvas.addEventListener("contextmenu", onContextMenu);
     canvas.addEventListener("keydown", onKeyDown);
     canvas.addEventListener("keyup", onKeyUp);
-    canvas.addEventListener("blur", clearKeys);
     if (!canvas.hasAttribute("tabindex")) {
         canvas.tabIndex = 0;
     }
@@ -186,7 +181,5 @@ export function attachFreeControl(camera: FreeCamera, canvas: HTMLCanvasElement,
         canvas.removeEventListener("contextmenu", onContextMenu);
         canvas.removeEventListener("keydown", onKeyDown);
         canvas.removeEventListener("keyup", onKeyUp);
-        canvas.removeEventListener("blur", clearKeys);
-        clearKeys();
     };
 }
