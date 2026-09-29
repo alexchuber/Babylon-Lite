@@ -23,7 +23,7 @@ export interface SceneHtmlTwin {
 /** Show an automatically updated marker for one focused scene target. Call the returned cleanup on blur. */
 export function showSceneFocusIndicator(
     scene: SceneContext,
-    target: SceneNode & { boundMin?: readonly number[]; boundMax?: readonly number[] },
+    target: Pick<SceneNode, "worldMatrix"> & { boundMin?: readonly number[]; boundMax?: readonly number[] },
     canvas: HTMLCanvasElement,
     border?: string
 ): () => void {

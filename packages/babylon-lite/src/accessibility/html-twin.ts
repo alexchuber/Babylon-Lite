@@ -1,5 +1,6 @@
 import { onAccessibilityTreeChanged } from "./accessibility-tree.js";
-import type { AccessibilityNode, AccessibilityNodeOptions, AccessibilityTree } from "./accessibility-tree.js";
+import type { AccessibilityChanges, AccessibilityNode, AccessibilityNodeOptions, AccessibilityTree } from "./accessibility-tree.js";
+import { validateFormOwnership } from "./form-ownership.js";
 
 /** Options for the browser-native semantic layer. */
 export interface HtmlTwinOptions {
@@ -46,16 +47,18 @@ export interface HtmlTwin {
     _focusCleanup?: () => void;
     /** @internal */
     _disposed: boolean;
+    /** @internal */
+    _focusedNode?: AccessibilityNode;
 }
 
-let elementOwners: WeakMap<HTMLElement, HtmlTwin> | undefined;
+let elementOwners: Map<HTMLElement, HtmlTwin> | undefined;
 
 function available(element: HTMLElement): boolean {
     return !element.closest("[hidden], [inert], [aria-hidden=true], [aria-disabled=true]") && !element.matches(":disabled");
 }
 
 function canActivate(twin: HtmlTwin, node: AccessibilityNode): boolean {
-    if (twin._disposed || !twin.tree._nodes.has(node)) {
+    if (twin._disposed || !twin.tree._nodes.has(node) || node._available?.() === false) {
         return false;
     }
     for (let current: AccessibilityNode | null = node; current; current = current.parent) {
@@ -74,6 +77,16 @@ function canActivate(twin: HtmlTwin, node: AccessibilityNode): boolean {
     return true;
 }
 
+function setAttribute(element: HTMLElement, key: string, value: string | null): void {
+    if (element.getAttribute(key) !== value) {
+        if (value === null) {
+            element.removeAttribute(key);
+        } else {
+            element.setAttribute(key, value);
+        }
+    }
+}
+
 function focusables(twin: HtmlTwin): HTMLElement[] {
     return [...twin.element.querySelectorAll<HTMLElement>("button, input, select, textarea, a[href], [tabindex]")].filter((element) => element.tabIndex >= 0 && available(element));
 }
@@ -82,22 +95,14 @@ function applyAttribute(item: TwinItem, key: string, value: string | null): void
     if (!item.attributes.has(key)) {
         item.attributes.set(key, item.element.getAttribute(key));
     }
-    if (value === null) {
-        item.element.removeAttribute(key);
-    } else {
-        item.element.setAttribute(key, value);
-    }
+    setAttribute(item.element, key, value);
     item.applied.set(key, value);
 }
 
 function restoreAttribute(item: TwinItem, key: string): void {
     if (item.element.getAttribute(key) === item.applied.get(key)) {
         const value = item.attributes.get(key);
-        if (value == null) {
-            item.element.removeAttribute(key);
-        } else {
-            item.element.setAttribute(key, value);
-        }
+        setAttribute(item.element, key, value ?? null);
     }
     item.applied.delete(key);
     item.attributes.delete(key);
@@ -112,15 +117,18 @@ function clearFocus(twin: HtmlTwin): void {
 function validateItem(twin: HtmlTwin, options: AccessibilityNodeOptions, node?: AccessibilityNode): void {
     const { element, tag } = options;
     if (element) {
-        const owner = elementOwners?.get(element);
-        if (
-            (owner && (owner !== twin || !node || twin._items.get(node)?.element !== element)) ||
-            element.ownerDocument !== twin.element.ownerDocument ||
-            element.contains(twin.element) ||
-            element.closest("canvas,[inert],.lite-html-overlay")
-        ) {
+        for (const [owned, owner] of elementOwners ?? []) {
+            if (owner === twin && node && twin._items.get(node)?.element === owned && owned === element) {
+                continue;
+            }
+            if (owned.contains(element) || element.contains(owned)) {
+                throw new Error("A native control cannot have overlapping accessibility owners.");
+            }
+        }
+        if (element.ownerDocument !== twin.element.ownerDocument || element.contains(twin.element) || element.closest("canvas,[inert],.lite-html-overlay")) {
             throw new Error("Accessibility controls require exclusive ownership, the host document, and a non-inert location outside the canvas.");
         }
+        validateFormOwnership(element, twin._options.parent);
         if (element.matches("input,select,textarea") || element.querySelector("input,select,textarea")) {
             for (const key of ["aria-checked", "aria-selected", "aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-readonly", "aria-multiline"]) {
                 if (tag?.aria && key in tag.aria) {
@@ -147,14 +155,8 @@ function createItem(twin: HtmlTwin, node: AccessibilityNode): TwinItem {
     const actionable = !!(node.tag?.eventHandler?.click || node.tag?.eventHandler?.contextmenu);
     const element = node.element ?? doc.createElement(actionable ? "button" : "div");
     if (node.element) {
-        const owner = elementOwners?.get(element);
-        if (owner) {
-            throw new Error("An HTML control can belong to only one accessibility twin.");
-        }
-        if (element.ownerDocument !== doc || element.contains(twin.element) || element.closest("canvas,[inert],.lite-html-overlay")) {
-            throw new Error("Accessibility controls must be unowned, non-inert DOM outside the canvas in the host document.");
-        }
-        (elementOwners ??= new WeakMap()).set(element, twin);
+        validateItem(twin, node, node);
+        (elementOwners ??= new Map()).set(element, twin);
     } else if (element.tagName === "BUTTON") {
         element.setAttribute("type", "button");
     } else {
@@ -215,11 +217,22 @@ function createItem(twin: HtmlTwin, node: AccessibilityNode): TwinItem {
         }
     });
     listen("focusin", (event) => {
+        if (!canActivate(twin, node)) {
+            if (event.target instanceof doc.defaultView!.HTMLElement) {
+                event.target.blur();
+            }
+            return;
+        }
+        twin._focusedNode = node;
         clearFocus(twin);
         twin._focusCleanup = twin._options.focusVisual?.(node, item.group ? item.wrapper : element) ?? undefined;
         node.tag?.eventHandler?.focus?.(event);
     });
     listen("focusout", (event) => {
+        if (twin._focusedNode !== node) {
+            return;
+        }
+        twin._focusedNode = undefined;
         clearFocus(twin);
         node.tag?.eventHandler?.blur?.(event);
     });
@@ -245,9 +258,9 @@ function restoreDisabledChildren(item: TwinItem, removedOnly = false): void {
             const applied = key === "disabled" ? "" : key === "tabindex" ? "-1" : "true";
             if (child.getAttribute(key) === applied) {
                 if (value === null) {
-                    child.removeAttribute(key);
+                    setAttribute(child, key, null);
                 } else {
-                    child.setAttribute(key, value);
+                    setAttribute(child, key, value);
                 }
             }
         }
@@ -279,41 +292,27 @@ function removeItem(item: TwinItem): void {
 function updateItem(item: TwinItem, disabled: boolean): void {
     const { node, element, wrapper } = item;
     item.disabled = disabled;
-    for (const key of item.groupAttributes) {
-        wrapper.removeAttribute(key);
-    }
-    item.groupAttributes.clear();
     const tag = node.tag;
     const group = !!tag && !item.adopted && element.tagName !== "BUTTON" && node.children.length > 0;
     item.group = group;
     const name = tag?.name ?? tag?.description;
-    wrapper.hidden = node.hidden || tag?.hidden === true || tag?.aria?.["aria-hidden"] === true || tag?.aria?.["aria-hidden"] === "true";
-    if (disabled) {
-        wrapper.setAttribute("aria-disabled", "true");
-    } else {
-        wrapper.removeAttribute("aria-disabled");
-    }
+    setAttribute(wrapper, "hidden", node.hidden || tag?.hidden === true || String(tag?.aria?.["aria-hidden"]) === "true" ? "" : null);
+    setAttribute(wrapper, "aria-disabled", disabled ? "true" : null);
     const values = new Map<string, string | null>();
     values.set("data-lite-a11y", "");
     if (tag?.role && !group) {
         values.set("role", tag.role);
     }
     if (group) {
-        wrapper.setAttribute("role", tag?.role ?? "group");
-        wrapper.setAttribute("data-lite-a11y", "");
-        wrapper.tabIndex = disabled ? -1 : (tag.tabIndex ?? -1);
-        if (name) {
-            wrapper.setAttribute("aria-label", name);
-        } else {
-            wrapper.removeAttribute("aria-label");
-        }
+        setAttribute(wrapper, "role", tag?.role ?? "group");
+        setAttribute(wrapper, "data-lite-a11y", "");
+        setAttribute(wrapper, "tabindex", String(disabled ? -1 : (tag.tabIndex ?? -1)));
     } else {
-        wrapper.removeAttribute("role");
-        wrapper.removeAttribute("aria-label");
-        wrapper.removeAttribute("data-lite-a11y");
-        wrapper.removeAttribute("tabindex");
+        setAttribute(wrapper, "role", null);
+        setAttribute(wrapper, "data-lite-a11y", null);
+        setAttribute(wrapper, "tabindex", null);
     }
-    if (item.adopted && name) {
+    if (name && (item.adopted || group || (tag?.role && !["none", "presentation", "paragraph"].includes(tag.role)))) {
         values.set("aria-label", name);
     }
     if (tag?.name && tag.description) {
@@ -328,10 +327,16 @@ function updateItem(item: TwinItem, disabled: boolean): void {
         }
         values.set(key, value == null ? null : String(value));
     }
+    for (const key of item.groupAttributes) {
+        if (!group || !values.has(key)) {
+            setAttribute(wrapper, key, null);
+            item.groupAttributes.delete(key);
+        }
+    }
     if (group) {
         for (const [key, value] of values) {
-            if (key.startsWith("aria-") && value !== null) {
-                wrapper.setAttribute(key, value);
+            if (key.startsWith("aria-")) {
+                setAttribute(wrapper, key, value);
                 item.groupAttributes.add(key);
             }
         }
@@ -353,7 +358,7 @@ function updateItem(item: TwinItem, disabled: boolean): void {
                     if (!attributes.has(key)) {
                         attributes.set(key, child.getAttribute(key));
                     }
-                    child.setAttribute(key, key === "disabled" ? "" : key === "tabindex" ? "-1" : "true");
+                    setAttribute(child, key, key === "disabled" ? "" : key === "tabindex" ? "-1" : "true");
                 }
             }
         }
@@ -361,8 +366,11 @@ function updateItem(item: TwinItem, disabled: boolean): void {
         restoreDisabledChildren(item);
     }
     if (!item.adopted) {
-        element.textContent = group ? "" : (name ?? "");
-        element.hidden = !tag || group;
+        const text = group ? "" : (name ?? "");
+        if (element.textContent !== text) {
+            element.textContent = text;
+        }
+        setAttribute(element, "hidden", !tag || group ? "" : null);
     }
     for (const key of item.applied.keys()) {
         if (!values.has(key)) {
@@ -374,8 +382,7 @@ function updateItem(item: TwinItem, disabled: boolean): void {
     }
 }
 
-/** Flush the current semantic state to DOM. Tree mutators call this automatically. */
-export function updateHtmlTwin(twin: HtmlTwin): void {
+function reconcile(twin: HtmlTwin, changes?: AccessibilityChanges): void {
     if (twin._disposed) {
         throw new Error("HTML twin is disposed.");
     }
@@ -385,50 +392,85 @@ export function updateHtmlTwin(twin: HtmlTwin): void {
     }
     const doc = twin.element.ownerDocument;
     const active = doc.activeElement;
-    const activeNode =
-        [...twin._items.values()].find((item) => (item.group && item.wrapper === active) || item.element === active || item.element.contains(active))?.node ??
-        [...twin.tree._nodes].find((node) => node.element?.contains(active));
-    const oldFocusables = focusables(twin);
+    const activeNode = twin._focusedNode ?? (!changes ? [...twin.tree._nodes].find((node) => node.element?.contains(active)) : undefined);
+    const affected = new Set(changes?.nodes ?? twin.tree._nodes);
+    const parents = new Set(changes?.parents ?? [null, ...twin.tree._nodes]);
+    const subtree = (node: AccessibilityNode): void => {
+        affected.add(node);
+        for (const child of node.children) {
+            subtree(child);
+        }
+    };
+    for (const node of changes?.subtrees ?? []) {
+        subtree(node);
+    }
+    for (const parent of parents) {
+        if (parent && twin.tree._nodes.has(parent)) {
+            affected.add(parent);
+        }
+    }
+    const hadFocus = !!active && (twin.element.contains(active) || !!activeNode?.element?.contains(active));
+    const focusAffected =
+        hadFocus &&
+        (!changes ||
+            (activeNode && (affected.has(activeNode) || changes.removed.has(activeNode))) ||
+            [...parents].some((parent) => parent && twin._items.get(parent)?.wrapper.contains(active)));
+    const oldFocusables = focusAffected ? focusables(twin) : [];
     const focusIndex = oldFocusables.findIndex((element) => element === active || element.contains(active));
-    const hadFocus = !!active && (twin.element.contains(active) || !!activeNode);
-    const visited = new Set<AccessibilityNode>();
-    const visit = (nodes: readonly AccessibilityNode[], container: HTMLElement, inheritedDisabled: boolean): void => {
+    const update = (node: AccessibilityNode): TwinItem => {
+        let item = twin._items.get(node);
+        const expectedTag = node.tag?.eventHandler?.click || node.tag?.eventHandler?.contextmenu ? "BUTTON" : "DIV";
+        if (item && (item.adopted ? item.element !== node.element : !!node.element || item.element.tagName !== expectedTag)) {
+            removeItem(item);
+            twin._items.delete(node);
+            item = undefined;
+            parents.add(node);
+            parents.add(node.parent);
+        }
+        if (!item) {
+            item = createItem(twin, node);
+            twin._items.set(node, item);
+        }
+        let disabled = false;
+        for (let current: AccessibilityNode | null = node; current; current = current.parent) {
+            disabled ||= current.disabled || current.tag?.disabled === true || String(current.tag?.aria?.["aria-disabled"]) === "true";
+        }
+        updateItem(item, disabled);
+        return item;
+    };
+    for (const node of affected) {
+        if (twin.tree._nodes.has(node)) {
+            update(node);
+        }
+    }
+    for (const node of changes?.removed ?? twin._items.keys()) {
+        const item = twin._items.get(node);
+        if (item && !twin.tree._nodes.has(node)) {
+            removeItem(item);
+            twin._items.delete(node);
+        }
+    }
+    for (const parent of parents) {
+        if (parent && !twin.tree._nodes.has(parent)) {
+            continue;
+        }
+        const container = parent ? twin._items.get(parent)!.children : twin.element;
+        const nodes = parent ? parent.children : twin.tree.roots;
         let previous: HTMLElement | null = null;
         for (const node of nodes) {
-            visited.add(node);
-            let item = twin._items.get(node);
-            const expectedTag = node.tag?.eventHandler?.click || node.tag?.eventHandler?.contextmenu ? "BUTTON" : "DIV";
-            if (item && (item.adopted ? item.element !== node.element : !!node.element || item.element.tagName !== expectedTag)) {
-                removeItem(item);
-                twin._items.delete(node);
-                item = undefined;
-            }
-            if (!item) {
-                item = createItem(twin, node);
-                twin._items.set(node, item);
-            }
-            const disabled =
-                inheritedDisabled || node.disabled || node.tag?.disabled === true || node.tag?.aria?.["aria-disabled"] === true || node.tag?.aria?.["aria-disabled"] === "true";
-            updateItem(item, disabled);
+            const item = twin._items.get(node) ?? update(node);
             const next: ChildNode | null = previous ? previous.nextSibling : container.firstChild;
             if (next !== item.wrapper) {
                 container.insertBefore(item.wrapper, next);
             }
             previous = item.wrapper;
-            visit(node.children, item.children, disabled);
-        }
-    };
-    visit(twin.tree.roots, twin.element, false);
-    for (const [node, item] of twin._items) {
-        if (!visited.has(node)) {
-            removeItem(item);
-            twin._items.delete(node);
         }
     }
-    if (hadFocus) {
+    const focusUnclaimed = doc.activeElement === active || doc.activeElement === doc.body || !doc.activeElement?.isConnected;
+    if (focusAffected && focusUnclaimed) {
         const mounted = activeNode ? getHtmlTwinElement(twin, activeNode) : null;
         const current = mounted?.contains(active) && active instanceof doc.defaultView!.HTMLElement ? active : mounted;
-        if (current && twin.element.contains(current) && available(current)) {
+        if (current && twin.element.contains(current) && available(current) && activeNode && canActivate(twin, activeNode)) {
             if (doc.activeElement !== current) {
                 current.focus({ preventScroll: true });
             }
@@ -445,6 +487,11 @@ export function updateHtmlTwin(twin: HtmlTwin): void {
     }
 }
 
+/** Explicitly refresh all items. Ordinary tree mutations reconcile only their dirty nodes/subtrees. */
+export function updateHtmlTwin(twin: HtmlTwin): void {
+    reconcile(twin);
+}
+
 /** Retrieve the real semantic element for focus, inspection, or native control integration. */
 export function getHtmlTwinElement(twin: HtmlTwin, node: AccessibilityNode): HTMLElement | undefined {
     const item = twin._items.get(node);
@@ -453,7 +500,12 @@ export function getHtmlTwinElement(twin: HtmlTwin, node: AccessibilityNode): HTM
 
 /** Focus an available semantic object without scrolling. Returns false for hidden/disabled objects. */
 export function focusHtmlTwinNode(twin: HtmlTwin, node: AccessibilityNode): boolean {
-    updateHtmlTwin(twin);
+    if (twin._disposed || !twin.tree._nodes.has(node)) {
+        throw new Error("Accessibility node is not mounted in this HTML twin.");
+    }
+    if (!canActivate(twin, node)) {
+        return false;
+    }
     const element = getHtmlTwinElement(twin, node);
     if (!element) {
         throw new Error("Accessibility node is not mounted in this HTML twin.");
@@ -500,7 +552,7 @@ export function createHtmlTwin(tree: AccessibilityTree, options: HtmlTwinOptions
     options.parent.append(style, element);
     const twin: HtmlTwin = { element, tree, _options: options, _items: new Map(), _style: style, _unsubscribe: () => {}, _disposed: false };
     const validate = (options: AccessibilityNodeOptions, node?: AccessibilityNode): void => validateItem(twin, options, node);
-    const unsubscribe = onAccessibilityTreeChanged(tree, () => updateHtmlTwin(twin));
+    const unsubscribe = onAccessibilityTreeChanged(tree, () => reconcile(twin, tree._changes));
     tree._validators.add(validate);
     twin._unsubscribe = () => {
         unsubscribe();

@@ -77,6 +77,16 @@ export interface AccessibilityNode {
     element?: HTMLElement;
     /** @internal */
     _children: AccessibilityNode[];
+    /** @internal Dispatch-time source state, independent of queued DOM reconciliation. */
+    _available?: () => boolean;
+}
+
+/** @internal Completed mutations consumed by incremental views. */
+export interface AccessibilityChanges {
+    nodes: Set<AccessibilityNode>;
+    subtrees: Set<AccessibilityNode>;
+    parents: Set<AccessibilityNode | null>;
+    removed: Set<AccessibilityNode>;
 }
 
 /** Logical scene or UI hierarchy, independent of rendering backend. */
@@ -97,6 +107,14 @@ export interface AccessibilityTree {
     _batchDepth?: number;
     /** @internal */
     _dirty?: boolean;
+    /** @internal */
+    _pendingChanges?: AccessibilityChanges;
+    /** @internal */
+    _changes?: AccessibilityChanges;
+}
+
+function changes(tree: AccessibilityTree): AccessibilityChanges {
+    return (tree._pendingChanges ??= { nodes: new Set(), subtrees: new Set(), parents: new Set(), removed: new Set() });
 }
 
 /** Create an empty semantic tree. No DOM or global state is accessed. */
@@ -129,6 +147,9 @@ function notify(tree: AccessibilityTree): void {
         tree._dirty = true;
         return;
     }
+    const previous = tree._changes;
+    tree._changes = tree._pendingChanges;
+    tree._pendingChanges = undefined;
     const errors: unknown[] = [];
     for (const listener of [...tree._listeners]) {
         try {
@@ -136,6 +157,7 @@ function notify(tree: AccessibilityTree): void {
         } catch (error) {
             errors.push(error);
         }
+        tree._changes = previous;
     }
     if (errors.length) {
         throw errors.length === 1 ? errors[0] : new AggregateError(errors, "Accessibility tree observers failed.");
@@ -200,6 +222,8 @@ export function addAccessibilityNode(tree: AccessibilityTree, options: Accessibi
     tree._nodes.add(node);
     const siblings = node.parent?._children ?? tree._roots;
     siblings.splice(options.before ? siblings.indexOf(options.before) : siblings.length, 0, node);
+    changes(tree).nodes.add(node);
+    changes(tree).parents.add(node.parent);
     notify(tree);
     return node;
 }
@@ -225,16 +249,21 @@ export function updateAccessibilityNode(tree: AccessibilityTree, node: Accessibi
     for (const validate of tree._validators) {
         validate({ ...node, ...patch, tag }, node);
     }
-    if (patch.parent !== undefined && patch.parent !== node.parent) {
+    const reparented = patch.parent !== undefined && patch.parent !== node.parent;
+    if (reparented) {
         requireTree(tree, patch.parent ?? undefined);
         for (let parent = patch.parent; parent; parent = parent.parent) {
             if (parent === node) {
                 throw new Error("Accessibility parent would create a cycle.");
             }
         }
+        changes(tree).parents.add(node.parent);
         detach(tree, node);
-        node.parent = patch.parent;
+        node.parent = patch.parent ?? null;
         (node.parent?._children ?? tree._roots).push(node);
+    }
+    if (reparented || patch.disabled !== undefined || tag?.disabled !== node.tag?.disabled || tag?.aria?.["aria-disabled"] !== node.tag?.aria?.["aria-disabled"]) {
+        changes(tree).subtrees.add(node);
     }
     if ("tag" in patch) {
         node.tag = tag;
@@ -256,6 +285,10 @@ export function updateAccessibilityNode(tree: AccessibilityTree, node: Accessibi
     if ("element" in patch) {
         node.element = patch.element;
     }
+    changes(tree).nodes.add(node);
+    if (reparented || patch.before !== undefined) {
+        changes(tree).parents.add(node.parent);
+    }
     notify(tree);
 }
 
@@ -268,12 +301,15 @@ function release(tree: AccessibilityTree, node: AccessibilityNode): void {
     node.target = undefined;
     node.element = undefined;
     node.tag = null;
+    node._available = undefined;
     tree._nodes.delete(node);
+    changes(tree).removed.add(node);
 }
 
 /** Remove a node and all of its descendants. */
 export function removeAccessibilityNode(tree: AccessibilityTree, node: AccessibilityNode): void {
     requireTree(tree, node);
+    changes(tree).parents.add(node.parent);
     detach(tree, node);
     release(tree, node);
     notify(tree);

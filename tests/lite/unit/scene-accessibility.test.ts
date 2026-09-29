@@ -66,6 +66,7 @@ describe("scene accessibility lifecycle", () => {
         const camera = createFreeCamera({ x: 0, y: 0, z: -5 }, { x: 0, y: 0, z: 0 });
         scene.camera = other.camera = camera;
         const descriptor = Object.getOwnPropertyDescriptor(scene, "camera")!;
+        const cameraParent = Object.getOwnPropertyDescriptor(camera, "parent");
         const first = createSceneAccessibility(scene);
         const second = createSceneAccessibility(scene);
         const shared = createSceneAccessibility(other);
@@ -78,7 +79,7 @@ describe("scene accessibility lifecycle", () => {
         disposeSceneAccessibility(second);
         expect(Object.getOwnPropertyDescriptor(scene, "camera")).toEqual({ ...descriptor, value: null });
         disposeScene(other);
-        expect(Object.getOwnPropertyDescriptor(camera, "parent")?.get).toBeUndefined();
+        expect(Object.getOwnPropertyDescriptor(camera, "parent")).toEqual(cameraParent);
         disposeScene(scene);
     });
 

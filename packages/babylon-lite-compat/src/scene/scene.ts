@@ -152,13 +152,17 @@ export class Scene extends AbstractScene {
         if (this._lite._z) {
             throw new Error("Cannot assign actions to a disposed scene.");
         }
-        this._detachActionKeyboard?.();
-        this._detachActionKeyboard = undefined;
-        this._actionManager = manager;
         const canvas = this._engine.getRenderingCanvas();
-        if (manager && canvas && "ownerDocument" in canvas && typeof canvas.addEventListener === "function") {
-            this._detachActionKeyboard = attachActionManagerKeyboard(manager, canvas, this);
+        let detach: (() => void) | undefined;
+        if (manager?.isDisposed()) {
+            throw new Error("Cannot assign a disposed action manager to a scene.");
         }
+        if (manager && canvas && "ownerDocument" in canvas && typeof canvas.addEventListener === "function") {
+            detach = attachActionManagerKeyboard(manager, canvas, this);
+        }
+        this._detachActionKeyboard?.();
+        this._detachActionKeyboard = detach;
+        this._actionManager = manager;
     }
 
     /**

@@ -85,7 +85,7 @@ Use `hidden: true` to hide a semantic subtree. Use `disabled: true` to keep the 
 
 Do not hide a meaningful object merely because the camera clips it or another mesh occludes it. Camera clipping can hide the projected marker without removing the semantic object. The marker does not perform occlusion testing.
 
-Canonical scene additions, removals, parent changes, observed scalar changes, and tag replacement synchronize automatically. DOM updates from scene changes coalesce into a microtask. After direct scene-array edits, call `updateSceneAccessibility(twin.accessibility)` explicitly.
+Canonical scene additions, removals, camera replacement, parent changes, observed scalar changes, and tag replacement synchronize automatically. Scene updates coalesce into a microtask and update affected DOM items without rewriting unrelated live content. Activation and focus check current ancestry before that microtask runs. After direct scene-array edits, call `updateSceneAccessibility(twin.accessibility)` explicitly.
 
 Clones start without tags. To reuse a snapshot intentionally, call `setAccessibilityTag(clone, getAccessibilityTag(source))`. This also reuses the callback functions, so check whether they capture the original object.
 
@@ -182,7 +182,9 @@ disposeHtmlOverlay(overlay);
 
 Choose `"panel"` for normal document layout or `"overlay"` for a fixed, screen-aligned host matching the canvas's CSS bounds. Overlay mode tracks resize and scroll. Call `updateHtmlOverlay` after other layout changes, such as application CSS transforms.
 
-Mount outside the canvas and outside inert content. Do not give the same element to an overlay and a twin. HTML texture sources remain inert and are rejected; create separate live controls instead of adopting the texture's source element.
+Mount outside the canvas and outside inert content. Do not give overlapping elements to separate twins, or share content between an overlay and a twin. HTML texture sources remain inert and are rejected; create separate live controls instead of adopting the texture's source element.
+
+Preserve the original form owner when hosting inputs. Move the whole form, choose a host inside that form, or supply an already valid explicit `form` attribute. Twins and overlays reject moves that would silently remove an input from form submission or validation.
 
 This API does not implement `HtmlInteractionManager`, `HtmlRaycastInteractionManager`, textured-plane perspective or UV hit testing, CSS 3D `HtmlMesh` behavior, arbitrary texture uploads, or HTML-in-Canvas polyfill management.
 

@@ -1,5 +1,5 @@
 import type { EngineContext, RenderingContext } from "../engine/engine.js";
-import { sceneNodeChanged, sceneAnimationOverride } from "./scene-lifecycle.js";
+import { sceneNodeChanged, sceneAnimationOverride, sceneDisposeOverride } from "./scene-lifecycle.js";
 import { _vis, isRenderingContextRegistered, registerRenderingContext, unregisterRenderingContext } from "../engine/engine.js";
 import type { SurfaceContext } from "../engine/surface.js";
 import type { Camera } from "../camera/camera.js";
@@ -513,8 +513,8 @@ export function disposeScene(scene: SceneContext): void {
     ctx._z = true;
     const lateCleanup = (_lateCleanup ??= new WeakMap());
     lateCleanup.set(ctx, () => 1);
-    unregisterRenderingContext(ctx.surface, ctx);
     const cleanup = (): void => {
+        unregisterRenderingContext(ctx.surface, ctx);
         lateCleanup.set(ctx, () => {
             for (const fns of ctx._meshDisposables.values()) {
                 fns.forEach((dispose) => dispose());
@@ -555,7 +555,11 @@ export function disposeScene(scene: SceneContext): void {
         ctx.shadowGenerators.length = 0;
         ctx.camera = null;
     };
-    cleanup();
+    if (sceneDisposeOverride) {
+        sceneDisposeOverride(ctx, cleanup);
+    } else {
+        cleanup();
+    }
 }
 
 /** @internal Run all deferred builders (called by registerScene's boot step before the first frame). */

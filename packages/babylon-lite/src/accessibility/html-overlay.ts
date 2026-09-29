@@ -1,3 +1,5 @@
+import { validateFormOwnership } from "./form-ownership.js";
+
 /** Options for a live DOM panel or screen-aligned canvas overlay. */
 export interface HtmlOverlayOptions {
     canvas: HTMLCanvasElement;
@@ -64,6 +66,7 @@ export function createHtmlOverlay(options: HtmlOverlayOptions): HtmlOverlay {
     ) {
         throw new Error("A live HTML overlay requires unowned, non-inert content and a parent outside the canvas in the same document.");
     }
+    validateFormOwnership(options.element, parent);
     const element = doc.createElement("div");
     element.className = "lite-html-overlay";
     element.setAttribute("role", "region");

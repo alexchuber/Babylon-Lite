@@ -1,5 +1,6 @@
 import type { SceneContext } from "../scene/scene-core.js";
 import type { SceneNode } from "../scene/scene-node.js";
+import type { Camera } from "../camera/camera.js";
 import {
     addAccessibilityNode,
     createAccessibilityTree,
@@ -11,16 +12,19 @@ import {
 } from "./accessibility-tree.js";
 import type { AccessibilityNode, AccessibilityTag, AccessibilityTree } from "./accessibility-tree.js";
 import { observeProperty } from "./observe-property.js";
-import { sceneNodeChanged, setSceneNodeChanged } from "../scene/scene-lifecycle.js";
+import { sceneNodeChanged, setSceneNodeChanged, sceneDisposeOverride, setSceneDisposeOverride } from "../scene/scene-lifecycle.js";
+
+type SceneSource = SceneNode | Camera;
 
 /** Optional explicit roots for logical/empty nodes that the rendering scene does not retain. */
 export interface SceneAccessibilityOptions {
-    roots?: readonly SceneNode[];
+    roots?: readonly (SceneNode | Camera)[];
 }
 
 interface NodeBinding {
     node: AccessibilityNode;
     unsubscribe: (() => void)[];
+    memberships: Set<SceneSource | null>;
 }
 
 /** Opt-in adapter. The scene owns its binding, never the component. */
@@ -29,21 +33,23 @@ export interface SceneAccessibility {
     /** @internal */
     _scene: SceneContext;
     /** @internal */
-    _bindings: Map<SceneNode, NodeBinding>;
+    _bindings: Map<SceneSource, NodeBinding>;
     /** @internal */
-    _dispose: () => void;
+    _unobserveCamera: () => void;
     /** @internal */
     _pending: boolean;
     /** @internal */
     _disposed: boolean;
     /** @internal */
-    _dirty: Set<SceneNode>;
+    _dirty: Set<SceneSource>;
     /** @internal */
-    _parents: Map<SceneNode, SceneNode | null>;
+    _parents: Map<SceneSource, SceneSource | null>;
     /** @internal */
-    _removed: WeakSet<SceneNode>;
+    _removed: WeakSet<SceneSource>;
     /** @internal */
-    _roots: Set<SceneNode>;
+    _roots: Set<SceneSource>;
+    /** @internal Null identifies the active camera's independent membership source. */
+    _memberships: Map<SceneSource | null, Set<SceneSource>>;
 }
 
 interface SceneObservers {
@@ -53,12 +59,41 @@ interface SceneObservers {
 let sceneObservers: WeakMap<SceneContext, SceneObservers> | undefined;
 let activeAdapters = 0;
 let previousNodeChanged: typeof sceneNodeChanged = null;
+let previousDispose: typeof sceneDisposeOverride = null;
 let tags: WeakMap<object, AccessibilityTag> | undefined;
 let tagObservers: WeakMap<object, Set<() => void>> | undefined;
 let tagValidators: WeakMap<object, Set<(tag: AccessibilityTag | null) => void>> | undefined;
 
-function isNode(value: unknown): value is SceneNode {
-    return typeof value === "object" && value !== null && "children" in value && Array.isArray(value.children) && "parent" in value && "worldMatrix" in value;
+function isNode(value: unknown): value is SceneSource {
+    return typeof value === "object" && value !== null && "children" in value && Array.isArray(value.children) && "worldMatrix" in value;
+}
+
+function parentOf(source: SceneSource): unknown {
+    return "parent" in source ? source.parent : null;
+}
+
+function disposeOwned(scene: SceneContext, cleanup: () => void): void {
+    const errors: unknown[] = [];
+    const previous = previousDispose;
+    for (const adapter of [...(sceneObservers?.get(scene)?.adapters ?? [])]) {
+        try {
+            disposeSceneAccessibility(adapter);
+        } catch (error) {
+            errors.push(error);
+        }
+    }
+    try {
+        if (previous) {
+            previous(scene, cleanup);
+        } else {
+            cleanup();
+        }
+    } catch (error) {
+        errors.push(error);
+    }
+    if (errors.length) {
+        throw errors.length === 1 ? errors[0] : new AggregateError(errors, "Scene and accessibility cleanup failed.");
+    }
 }
 
 function nodeChanged(scene: SceneContext, node: unknown, added: boolean): void {
@@ -67,31 +102,58 @@ function nodeChanged(scene: SceneContext, node: unknown, added: boolean): void {
         if (isNode(node)) {
             if (added) {
                 target._removed.delete(node);
-                if (!scene.meshes.some((member) => member === node) && !scene.lights.some((member) => member === node) && !(isNode(scene.camera) && scene.camera === node)) {
-                    target._roots.add(node);
-                }
-                bind(target, node);
-                schedule(target, node);
+                target._roots.add(node);
+                batchAccessibilityUpdates(target.tree, () => {
+                    bind(target, node, node);
+                    schedule(target, node);
+                });
             } else {
-                unbind(target, node);
+                batchAccessibilityUpdates(target.tree, () => {
+                    target._removed.add(node);
+                    target._roots.delete(node);
+                    releaseMembership(target, node);
+                    unbind(target, node);
+                });
             }
         }
     }
 }
 
-function disposed(node: SceneNode): boolean {
+function disposed(node: SceneSource): boolean {
     return "_disposed" in node && node._disposed === true;
 }
 
-function sourceState(source: SceneNode, tag = getAccessibilityTag(source)): Pick<AccessibilityNode, "tag" | "hidden" | "disabled"> {
+function sourceState(source: SceneSource, tag = getAccessibilityTag(source)): Pick<AccessibilityNode, "tag" | "hidden" | "disabled"> {
     return {
-        tag: tag && source.visible !== false ? _snapshotAccessibilityTag({ ...tag, name: tag.name ?? tag.description ?? source.name }) : null,
+        tag: tag && (!("visible" in source) || source.visible !== false) ? _snapshotAccessibilityTag({ ...tag, name: tag.name ?? tag.description ?? source.name }) : null,
         hidden: disposed(source) || tag?.hidden === true,
         disabled: tag?.disabled === true,
     };
 }
 
-function schedule(adapter: SceneAccessibility, source: SceneNode): void {
+function sourceAvailable(adapter: SceneAccessibility, source: SceneSource): boolean {
+    if (adapter._disposed || adapter._scene._z) {
+        return false;
+    }
+    for (let current: SceneSource | null = source; current;) {
+        const tag = getAccessibilityTag(current);
+        if (
+            disposed(current) ||
+            adapter._removed.has(current) ||
+            tag?.hidden ||
+            tag?.disabled ||
+            String(tag?.aria?.["aria-hidden"]) === "true" ||
+            String(tag?.aria?.["aria-disabled"]) === "true"
+        ) {
+            return false;
+        }
+        const parent: unknown = adapter._parents.has(current) ? adapter._parents.get(current) : parentOf(current);
+        current = isNode(parent) ? parent : null;
+    }
+    return true;
+}
+
+function schedule(adapter: SceneAccessibility, source: SceneSource): void {
     const binding = adapter._bindings.get(source);
     if (binding) {
         Object.assign(binding.node, sourceState(source));
@@ -114,72 +176,122 @@ function schedule(adapter: SceneAccessibility, source: SceneNode): void {
     });
 }
 
-function bind(adapter: SceneAccessibility, source: SceneNode): AccessibilityNode | undefined {
+function bind(adapter: SceneAccessibility, source: SceneSource, membership: SceneSource | null, descendants = true): AccessibilityNode | undefined {
     if (disposed(source) || adapter._removed.has(source)) {
         return undefined;
     }
     const existing = adapter._bindings.get(source);
-    if (existing) {
+    if (existing?.memberships.has(membership)) {
         return existing.node;
     }
-    const node = addAccessibilityNode(adapter.tree, { target: source, ...sourceState(source) });
-    const binding: NodeBinding = { node, unsubscribe: [] };
+    const node = existing?.node ?? addAccessibilityNode(adapter.tree, { target: source, ...sourceState(source) });
+    const binding: NodeBinding = existing ?? { node, unsubscribe: [], memberships: new Set() };
+    binding.memberships.add(membership);
+    let members = adapter._memberships.get(membership);
+    if (!members) {
+        members = new Set();
+        adapter._memberships.set(membership, members);
+    }
+    members.add(source);
     adapter._bindings.set(source, binding);
-    for (const property of ["name", "visible", "parent", "_disposed"]) {
-        binding.unsubscribe.push(observeProperty(source, property, () => schedule(adapter, source)));
-    }
-    const observers = (tagObservers ??= new WeakMap());
-    let listeners = observers.get(source);
-    if (!listeners) {
-        listeners = new Set();
-        observers.set(source, listeners);
-    }
-    const changed = (): void => schedule(adapter, source);
-    listeners.add(changed);
-    binding.unsubscribe.push(() => {
-        listeners.delete(changed);
-        if (listeners.size === 0) {
-            observers.delete(source);
+    if (!existing) {
+        node._available = () => sourceAvailable(adapter, source);
+        for (const property of ["name", "visible", "parent", "_disposed"]) {
+            binding.unsubscribe.push(observeProperty(source, property, () => schedule(adapter, source)));
         }
-    });
-    const validations = (tagValidators ??= new WeakMap());
-    let validators = validations.get(source);
-    if (!validators) {
-        validators = new Set();
-        validations.set(source, validators);
-    }
-    const validate = (tag: AccessibilityTag | null): void => {
-        for (const check of adapter.tree._validators) {
-            check({ ...node, ...sourceState(source, tag) }, node);
+        const observers = (tagObservers ??= new WeakMap());
+        let listeners = observers.get(source);
+        if (!listeners) {
+            listeners = new Set();
+            observers.set(source, listeners);
         }
-    };
-    validators.add(validate);
-    binding.unsubscribe.push(() => {
-        validators.delete(validate);
-        if (!validators.size) {
-            validations.delete(source);
+        const changed = (): void => schedule(adapter, source);
+        listeners.add(changed);
+        binding.unsubscribe.push(() => {
+            listeners.delete(changed);
+            if (listeners.size === 0) {
+                observers.delete(source);
+            }
+        });
+        const validations = (tagValidators ??= new WeakMap());
+        let validators = validations.get(source);
+        if (!validators) {
+            validators = new Set();
+            validations.set(source, validators);
         }
-    });
-    if (isNode(source.parent)) {
-        const parent = bind(adapter, source.parent);
-        updateAccessibilityNode(adapter.tree, node, { parent: parent ?? null });
+        const validate = (tag: AccessibilityTag | null): void => {
+            for (const check of adapter.tree._validators) {
+                check({ ...node, ...sourceState(source, tag) }, node);
+            }
+        };
+        validators.add(validate);
+        binding.unsubscribe.push(() => {
+            validators.delete(validate);
+            if (!validators.size) {
+                validations.delete(source);
+            }
+        });
     }
-    for (const child of source.children) {
-        bind(adapter, child);
+    const sourceParent = parentOf(source);
+    if (isNode(sourceParent)) {
+        const parent = bind(adapter, sourceParent, membership, false);
+        if (!adapter._parents.has(source)) {
+            updateAccessibilityNode(adapter.tree, node, { parent: parent ?? null });
+        }
+    }
+    if (descendants) {
+        for (const child of source.children) {
+            bind(adapter, child, membership);
+        }
     }
     return node;
 }
 
-function unbind(adapter: SceneAccessibility, source: SceneNode): void {
+function releaseMembership(adapter: SceneAccessibility, membership: SceneSource | null): void {
+    const members = adapter._memberships.get(membership);
+    adapter._memberships.delete(membership);
+    for (const source of members ?? []) {
+        const binding = adapter._bindings.get(source);
+        binding?.memberships.delete(membership);
+        if (binding?.memberships.size === 0) {
+            unbind(adapter, source, false);
+        }
+    }
+}
+
+function updateCamera(adapter: SceneAccessibility): void {
+    batchAccessibilityUpdates(adapter.tree, () => {
+        const previous = adapter._memberships.get(null);
+        adapter._memberships.delete(null);
+        for (const source of previous ?? []) {
+            adapter._bindings.get(source)?.memberships.delete(null);
+        }
+        if (isNode(adapter._scene.camera)) {
+            bind(adapter, adapter._scene.camera, null);
+        }
+        for (const source of previous ?? []) {
+            if (adapter._bindings.get(source)?.memberships.size === 0) {
+                unbind(adapter, source, false);
+            }
+        }
+    });
+}
+
+function unbind(adapter: SceneAccessibility, source: SceneSource, removed = true): void {
     const binding = adapter._bindings.get(source);
     if (!binding) {
         return;
     }
-    adapter._removed.add(source);
-    adapter._roots.delete(source);
+    if (removed) {
+        adapter._removed.add(source);
+        adapter._roots.delete(source);
+    }
     adapter._parents.delete(source);
     binding.unsubscribe.forEach((unsubscribe) => unsubscribe());
     adapter._bindings.delete(source);
+    for (const membership of binding.memberships) {
+        adapter._memberships.get(membership)?.delete(source);
+    }
     batchAccessibilityUpdates(adapter.tree, () => {
         for (const child of [...binding.node.children]) {
             updateAccessibilityNode(adapter.tree, child, { parent: binding.node.parent });
@@ -195,7 +307,7 @@ function unbind(adapter: SceneAccessibility, source: SceneNode): void {
 }
 
 /** Refresh after in-place ARIA edits or a batch of raw property writes. No per-frame scan is installed. */
-function updateSource(adapter: SceneAccessibility, source: SceneNode): void {
+function updateSource(adapter: SceneAccessibility, source: SceneSource): void {
     const binding = adapter._bindings.get(source);
     if (!binding) {
         return;
@@ -204,8 +316,13 @@ function updateSource(adapter: SceneAccessibility, source: SceneNode): void {
         unbind(adapter, source);
         return;
     }
-    const sourceParent = adapter._parents.has(source) ? adapter._parents.get(source) : source.parent;
-    const parent = isNode(sourceParent) ? bind(adapter, sourceParent) : undefined;
+    const sourceParent = adapter._parents.has(source) ? adapter._parents.get(source) : parentOf(source);
+    if (isNode(sourceParent)) {
+        for (const membership of binding.memberships) {
+            bind(adapter, sourceParent, membership, false);
+        }
+    }
+    const parent = isNode(sourceParent) ? adapter._bindings.get(sourceParent)?.node : undefined;
     updateAccessibilityNode(adapter.tree, binding.node, {
         ...sourceState(source),
         parent: parent ?? null,
@@ -218,34 +335,23 @@ export function updateSceneAccessibility(adapter: SceneAccessibility): void {
         throw new Error("Scene accessibility is disposed.");
     }
     batchAccessibilityUpdates(adapter.tree, () => {
-        const retained = new Set<SceneNode>();
-        const visit = (source: SceneNode): void => {
-            if (retained.has(source) || disposed(source)) {
-                return;
-            }
-            retained.add(source);
-            for (const child of source.children) {
-                visit(child);
-            }
-            if (isNode(source.parent)) {
-                visit(source.parent);
-            }
-        };
+        adapter._memberships.clear();
+        for (const binding of adapter._bindings.values()) {
+            binding.memberships.clear();
+        }
         for (const source of [...adapter._scene.meshes, ...adapter._scene.lights, ...adapter._roots]) {
-            visit(source);
+            adapter._removed.delete(source);
+            bind(adapter, source, source);
         }
         if (isNode(adapter._scene.camera)) {
-            visit(adapter._scene.camera);
+            bind(adapter, adapter._scene.camera, null);
         }
-        for (const source of adapter._bindings.keys()) {
-            if (!retained.has(source)) {
-                unbind(adapter, source);
+        for (const [source, binding] of adapter._bindings) {
+            if (binding.memberships.size) {
+                updateSource(adapter, source);
+            } else {
+                unbind(adapter, source, false);
             }
-        }
-        for (const source of retained) {
-            adapter._removed.delete(source);
-            bind(adapter, source);
-            updateSource(adapter, source);
         }
     });
 }
@@ -272,18 +378,19 @@ export function getAccessibilityTag(node: object): AccessibilityTag | null {
 }
 
 /** Retrieve the stable semantic representation of a registered native node. */
-export function getAccessibilityNode(adapter: SceneAccessibility, node: SceneNode): AccessibilityNode | undefined {
+export function getAccessibilityNode(adapter: SceneAccessibility, node: SceneNode | Camera): AccessibilityNode | undefined {
     return adapter._bindings.get(node)?.node;
 }
 
 /** Override logical grouping without changing transforms. Pass undefined to restore transform parentage. */
-export function setAccessibilityParent(adapter: SceneAccessibility, source: SceneNode, parent: SceneNode | null | undefined): void {
+export function setAccessibilityParent(adapter: SceneAccessibility, source: SceneNode | Camera, parent: SceneNode | Camera | null | undefined): void {
     const node = getAccessibilityNode(adapter, source);
     const parentNode = parent ? getAccessibilityNode(adapter, parent) : null;
     if (!node || (parent && !parentNode)) {
         throw new Error("Semantic parent and child must belong to the scene accessibility binding.");
     }
-    const actualParent = parent === undefined && isNode(source.parent) ? getAccessibilityNode(adapter, source.parent) : parentNode;
+    const naturalParent = parentOf(source);
+    const actualParent = parent === undefined && isNode(naturalParent) ? getAccessibilityNode(adapter, naturalParent) : parentNode;
     updateAccessibilityNode(adapter.tree, node, { parent: actualParent ?? null });
     if (parent === undefined) {
         adapter._parents.delete(source);
@@ -301,13 +408,14 @@ export function createSceneAccessibility(scene: SceneContext, options: SceneAcce
         tree: createAccessibilityTree(),
         _scene: scene,
         _bindings: new Map(),
-        _dispose: () => disposeSceneAccessibility(adapter),
+        _unobserveCamera: () => {},
         _pending: false,
         _disposed: false,
         _dirty: new Set(),
         _parents: new Map(),
         _removed: new WeakSet(),
         _roots: new Set(options.roots ?? []),
+        _memberships: new Map(),
     };
     const registry = (sceneObservers ??= new WeakMap());
     let observers = registry.get(scene);
@@ -318,16 +426,12 @@ export function createSceneAccessibility(scene: SceneContext, options: SceneAcce
     if (activeAdapters++ === 0) {
         previousNodeChanged = sceneNodeChanged;
         setSceneNodeChanged(nodeChanged);
+        previousDispose = sceneDisposeOverride;
+        setSceneDisposeOverride(disposeOwned);
     }
     observers.adapters.add(adapter);
-    scene._disposables.push(adapter._dispose);
     try {
-        for (const root of [...scene.meshes, ...scene.lights, ...(options.roots ?? [])]) {
-            bind(adapter, root);
-        }
-        if (isNode(scene.camera)) {
-            bind(adapter, scene.camera);
-        }
+        adapter._unobserveCamera = observeProperty(scene, "camera", () => updateCamera(adapter));
         updateSceneAccessibility(adapter);
     } catch (error) {
         disposeSceneAccessibility(adapter);
@@ -342,6 +446,7 @@ export function disposeSceneAccessibility(adapter: SceneAccessibility): void {
         return;
     }
     adapter._disposed = true;
+    adapter._unobserveCamera();
     for (const binding of adapter._bindings.values()) {
         binding.unsubscribe.forEach((unsubscribe) => unsubscribe());
     }
@@ -349,6 +454,7 @@ export function disposeSceneAccessibility(adapter: SceneAccessibility): void {
     adapter._roots.clear();
     adapter._dirty.clear();
     adapter._parents.clear();
+    adapter._memberships.clear();
     const scene = adapter._scene;
     const observers = sceneObservers?.get(scene);
     observers?.adapters.delete(adapter);
@@ -358,10 +464,8 @@ export function disposeSceneAccessibility(adapter: SceneAccessibility): void {
     if (--activeAdapters === 0) {
         setSceneNodeChanged(previousNodeChanged);
         previousNodeChanged = null;
-    }
-    const index = scene._disposables.indexOf(adapter._dispose);
-    if (index !== -1) {
-        scene._disposables.splice(index, 1);
+        setSceneDisposeOverride(previousDispose);
+        previousDispose = null;
     }
     disposeAccessibilityTree(adapter.tree);
 }

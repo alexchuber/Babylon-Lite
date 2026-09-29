@@ -145,6 +145,26 @@ export class HTMLTwinRenderer {
         let node = this._nodes.get(source);
         if (!node) {
             node = addAccessibilityNode(this.tree, { target: source });
+            node._available = () => {
+                if (this._disposed || this._scene._lite._z) {
+                    return false;
+                }
+                for (let current: Node | null = source; current; current = current.parent) {
+                    const tag = current.accessibilityTag;
+                    if (
+                        current.isDisposed() ||
+                        !current.isEnabled() ||
+                        tag?.disabled ||
+                        tag?.hidden ||
+                        String(tag?.aria?.["aria-disabled"]) === "true" ||
+                        String(tag?.aria?.["aria-hidden"]) === "true" ||
+                        (current instanceof AbstractMesh && !current.isVisible)
+                    ) {
+                        return false;
+                    }
+                }
+                return true;
+            };
             this._nodes.set(source, node);
             if (source.parent) {
                 this._update(source.parent);
