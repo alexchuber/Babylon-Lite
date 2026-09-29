@@ -86,10 +86,13 @@ export function setHtmlOverlayVisible(overlay: HtmlOverlay, visible: boolean): v
         throw new Error("HTML overlay is disposed.");
     }
     const hadFocus = overlay.element.contains(overlay.element.ownerDocument.activeElement);
-    overlay.element.hidden = !visible;
-    if (visible) {
+    if (visible && overlay.element.hidden) {
+        updateHtmlOverlay(overlay);
+        overlay.element.hidden = false;
+    } else if (visible) {
         scheduleGeometryUpdate(overlay);
     } else {
+        overlay.element.hidden = true;
         cancelGeometryUpdate(overlay);
     }
     if (!visible && hadFocus) {

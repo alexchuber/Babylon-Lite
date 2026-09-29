@@ -51,6 +51,7 @@ export class HTMLTwinRenderer {
     private readonly _sortParents = new Set<AccessibilityNode | null>();
     private readonly _orders = new Map<AccessibilityNode, number>();
     private readonly _managers = new Map<Node, { manager: ActionManager; unsubscribe: () => void }>();
+    private readonly _previousStates = new Map<Node, Pick<AccessibilityNodeOptions, "tag" | "hidden" | "disabled">>();
     private readonly _previous: Scene["_accessibilityNodeChanged"];
     private readonly _changed: (node: Node, mutation?: AccessibilityNodeMutation) => void;
     private readonly _previousValidation: Scene["_accessibilityTagChanging"];
@@ -111,7 +112,11 @@ export class HTMLTwinRenderer {
             this._previous?.(node, mutation);
             const semantic = this._nodes.get(node);
             if (semantic) {
-                Object.assign(semantic, this._state(node));
+                if (!this._previousStates.has(node)) {
+                    this._previousStates.set(node, { tag: semantic.tag, hidden: semantic.hidden, disabled: semantic.disabled });
+                }
+                const state = this._state(node);
+                Object.assign(semantic, { tag: state.tag, hidden: state.hidden, disabled: state.disabled });
             }
             if (mutation === "subtree") {
                 this._dirtySubtrees.add(node);
@@ -194,7 +199,7 @@ export class HTMLTwinRenderer {
         return node;
     }
 
-    private _state(source: Node, tag = source.accessibilityTag): Pick<AccessibilityNodeOptions, "tag" | "hidden" | "disabled"> {
+    private _state(source: Node, tag = source.accessibilityTag): Pick<AccessibilityNodeOptions, "tag" | "hidden" | "disabled" | "_derivedState"> {
         const primary = findActionManager(source, ActionManager.OnPickTrigger) || findActionManager(source, ActionManager.OnLeftPickTrigger);
         const secondary = findActionManager(source, ActionManager.OnPickTrigger) || findActionManager(source, ActionManager.OnRightPickTrigger);
         const metadata: AccessibilityTag | null =
@@ -214,6 +219,7 @@ export class HTMLTwinRenderer {
             tag: metadata,
             hidden: source.isDisposed() || !source.isEnabled() || (source instanceof AbstractMesh && !source.isVisible) || tag?.hidden === true,
             disabled: tag?.disabled === true,
+            _derivedState: true,
         };
     }
 
@@ -236,6 +242,7 @@ export class HTMLTwinRenderer {
     }
 
     private _remove(source: Node): void {
+        this._previousStates.delete(source);
         this._managers.get(source)?.unsubscribe();
         this._managers.delete(source);
         const removed = this._nodes.get(source);
@@ -265,6 +272,11 @@ export class HTMLTwinRenderer {
             return;
         }
         const node = this._ensure(source)!;
+        const previousState = this._previousStates.get(source);
+        if (previousState) {
+            Object.assign(node, previousState);
+            this._previousStates.delete(source);
+        }
         const oldParent = node.parent;
         const oldOrder = this._orders.get(node);
         const order = (source._accessibilityTabOrder ?? 0) > 0 ? source._accessibilityTabOrder! : Infinity;
@@ -316,6 +328,8 @@ export class HTMLTwinRenderer {
         if (this._disposed) {
             throw new Error("HTMLTwinRenderer is disposed.");
         }
+        this._dirty.clear();
+        this._dirtySubtrees.clear();
         batchAccessibilityUpdates(this.tree, () => {
             const pending = [...this._scene.meshes, ...this._scene.cameras, ...this._scene.lights, ...(this._options.roots ?? [])];
             const descendants = new Set<Node>();
@@ -374,6 +388,7 @@ export class HTMLTwinRenderer {
         this._sources.clear();
         this._orders.clear();
         this._sortParents.clear();
+        this._previousStates.clear();
         for (const entry of this._managers.values()) {
             entry.unsubscribe();
         }

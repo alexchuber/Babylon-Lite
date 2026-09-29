@@ -131,12 +131,33 @@ describe("accessibility tree", () => {
         expect(() => updateAccessibilityNode(tree, node, { hidden: false, tag: { aria: { "aria-hidden": true } } })).toThrow(/conflicting/i);
         expect(() => updateAccessibilityNode(tree, node, { tag: { eventHandler: invalidHandler } })).toThrow(/function/i);
         expect(node).toMatchObject({ hidden: false, tag: { name: "Original" } });
+
+        const authoredHidden = addAccessibilityNode(tree, { hidden: true, tag: { name: "Authored hidden" } });
+        const authoredDisabled = addAccessibilityNode(tree, { disabled: false, tag: { name: "Authored enabled" } });
+        expect(() => updateAccessibilityNode(tree, authoredHidden, { tag: { name: "Rejected hidden", aria: { "aria-hidden": false } } })).toThrow(/conflicting/i);
+        expect(() => updateAccessibilityNode(tree, authoredDisabled, { tag: { name: "Rejected disabled", aria: { "aria-disabled": true } } })).toThrow(/conflicting/i);
+        expect(authoredHidden).toMatchObject({ hidden: true, tag: { name: "Authored hidden" } });
+        expect(authoredDisabled).toMatchObject({ disabled: false, tag: { name: "Authored enabled" } });
+
+        const derived = addAccessibilityNode(tree, { hidden: true, tag: { name: "Authored before derived state" } });
+        updateAccessibilityNode(tree, derived, { hidden: false, _derivedState: true });
+        expect(() => updateAccessibilityNode(tree, derived, { tag: { name: "Rejected after derived state", aria: { "aria-hidden": false } } })).toThrow(/conflicting/i);
+        expect(derived).toMatchObject({ hidden: false, tag: { name: "Authored before derived state" } });
+
+        const inherited = addAccessibilityNode(tree, { tag: { aria: { "aria-hidden": true, "aria-disabled": true } } });
+        updateAccessibilityNode(tree, inherited, {
+            hidden: undefined,
+            disabled: undefined,
+            tag: { aria: { "aria-hidden": false, "aria-disabled": false } },
+        });
+        expect(inherited).toMatchObject({ hidden: false, disabled: false, tag: { aria: { "aria-hidden": false, "aria-disabled": false } } });
     });
 
     it("invalidates descendants only when effective local availability changes", () => {
         const tree = createAccessibilityTree();
         const parent = addAccessibilityNode(tree, {});
         const child = addAccessibilityNode(tree, { parent });
+        const inheritedParent = addAccessibilityNode(tree, {});
         const snapshots: { nodes: AccessibilityNode[]; subtrees: AccessibilityNode[] }[] = [];
         onAccessibilityTreeChanged(tree, () => {
             snapshots.push({ nodes: [...tree._changes!.nodes], subtrees: [...tree._changes!.subtrees] });
@@ -145,13 +166,13 @@ describe("accessibility tree", () => {
         updateAccessibilityNode(tree, parent, { disabled: false });
         updateAccessibilityNode(tree, parent, { hidden: true });
         updateAccessibilityNode(tree, parent, { hidden: false });
-        updateAccessibilityNode(tree, parent, { tag: { aria: { "aria-hidden": true } } });
+        updateAccessibilityNode(tree, inheritedParent, { tag: { aria: { "aria-hidden": true } } });
 
         expect(snapshots).toEqual([
             { nodes: [parent], subtrees: [] },
             { nodes: [parent], subtrees: [parent] },
             { nodes: [parent], subtrees: [parent] },
-            { nodes: [parent], subtrees: [parent] },
+            { nodes: [inheritedParent], subtrees: [inheritedParent] },
         ]);
         expect(child.parent).toBe(parent);
     });

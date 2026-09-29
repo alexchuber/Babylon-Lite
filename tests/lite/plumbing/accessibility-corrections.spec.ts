@@ -461,6 +461,84 @@ for (const hiddenSource of ["node", "tag", "aria"] as const) {
     });
 }
 
+for (const mode of ["native", "compat"] as const) {
+    for (const unavailable of ["hidden", "disabled", "aria-hidden", "aria-disabled"] as const) {
+        test(`G01 ${mode} ${unavailable} ancestor updates recover focus and native descendant state`, async ({ page }) => {
+            const result = await page.evaluate(
+                async ({ urls, mode, unavailable }) => {
+                    const api: typeof Lite = await import(urls.lite);
+                    let focusedElement: HTMLElement;
+                    let fallbackElement: HTMLElement;
+                    let updateParent: () => void;
+                    let cleanup: () => void;
+                    if (mode === "native") {
+                        const scene = api.createSceneContext(api.createNullEngine(), { defaultRenderTask: false });
+                        const parent = api.createTransformNode("Parent");
+                        const focused = api.createTransformNode("Focused");
+                        const fallback = api.createTransformNode("Fallback");
+                        api.setParent(focused, parent);
+                        api.setAccessibilityTag(parent, { name: "Parent", role: "group" });
+                        api.setAccessibilityTag(focused, { name: "Focused", eventHandler: { click: () => {} } });
+                        api.setAccessibilityTag(fallback, { name: "Fallback", eventHandler: { click: () => {} } });
+                        const adapter = api.createSceneAccessibility(scene, { roots: [parent, fallback] });
+                        const twin = api.createHtmlTwin(adapter.tree, { parent: document.body });
+                        focusedElement = api.getHtmlTwinElement(twin, api.getAccessibilityNode(adapter, focused)!)!;
+                        fallbackElement = api.getHtmlTwinElement(twin, api.getAccessibilityNode(adapter, fallback)!)!;
+                        api.focusHtmlTwinNode(twin, api.getAccessibilityNode(adapter, focused)!);
+                        updateParent = () =>
+                            api.setAccessibilityTag(
+                                parent,
+                                unavailable.startsWith("aria-")
+                                    ? { name: "Parent", role: "group", aria: { [unavailable]: true } }
+                                    : { name: "Parent", role: "group", [unavailable]: true }
+                            );
+                        cleanup = () => api.disposeScene(scene);
+                    } else {
+                        const { Scene }: typeof CompatScene = await import(urls.scene);
+                        const { NullEngine }: typeof CompatEngine = await import(urls.engine);
+                        const { TransformNode }: typeof CompatMeshes = await import(urls.meshes);
+                        const { HTMLTwinRenderer }: typeof CompatTwin = await import(urls.twin);
+                        const engine = new NullEngine();
+                        const canvas = document.createElement("canvas");
+                        document.body.append(canvas);
+                        engine.getRenderingCanvas = () => canvas;
+                        const scene = new Scene(engine);
+                        const parent = new TransformNode("Parent", scene);
+                        const focused = new TransformNode("Focused", scene);
+                        const fallback = new TransformNode("Fallback", scene);
+                        focused.parent = parent;
+                        parent.accessibilityTag = { description: "Parent", role: "group" };
+                        focused.accessibilityTag = { description: "Focused", eventHandler: { click: () => {} } };
+                        fallback.accessibilityTag = { description: "Fallback", eventHandler: { click: () => {} } };
+                        const renderer = HTMLTwinRenderer.Render(scene, { roots: [parent, fallback], parentElement: document.body });
+                        const buttons = renderer.view.element.querySelectorAll<HTMLElement>("button");
+                        focusedElement = buttons[0]!;
+                        fallbackElement = buttons[1]!;
+                        renderer.focus(focused);
+                        updateParent = () => {
+                            parent.accessibilityTag = unavailable.startsWith("aria-")
+                                ? { description: "Parent", role: "group", aria: { [unavailable]: true } }
+                                : { description: "Parent", role: "group", [unavailable]: true };
+                        };
+                        cleanup = () => scene.dispose();
+                    }
+                    updateParent();
+                    await Promise.resolve();
+                    const hidden = unavailable.endsWith("hidden");
+                    const result = {
+                        fallbackFocused: document.activeElement === fallbackElement,
+                        nativeUnavailable: hidden ? focusedElement.closest("[hidden]") !== null : focusedElement.matches(":disabled"),
+                    };
+                    cleanup();
+                    return result;
+                },
+                { urls, mode, unavailable }
+            );
+            expect(result).toEqual({ fallbackFocused: true, nativeUnavailable: true });
+        });
+    }
+}
+
 test("F05 borrowed DOM additions and replacements reject atomically with multiple mounted views", async ({ page }) => {
     const result = await page.evaluate(async (urls) => {
         const api: typeof Lite = await import(urls.lite);
@@ -650,6 +728,63 @@ test("F03 compat refresh retains dependency ancestors without importing unretain
     expect(result).toEqual({ parent: false, canonical: true, sibling: false });
 });
 
+test("G03 compat refresh supersedes stale local and subtree queues but preserves reentrant work", async ({ page }) => {
+    const result = await page.evaluate(async (urls) => {
+        const { Scene }: typeof CompatScene = await import(urls.scene);
+        const { NullEngine }: typeof CompatEngine = await import(urls.engine);
+        const { TransformNode }: typeof CompatMeshes = await import(urls.meshes);
+        const { HTMLTwinRenderer }: typeof CompatTwin = await import(urls.twin);
+        const { ActionManager, ExecuteCodeAction }: typeof CompatActions = await import(urls.actions);
+        const engine = new NullEngine();
+        const canvas = document.createElement("canvas");
+        document.body.append(canvas);
+        engine.getRenderingCanvas = () => canvas;
+        const scene = new Scene(engine);
+        const retained = new TransformNode("Retained", scene);
+        const trigger = new TransformNode("Trigger", scene);
+        const staleLocal = new TransformNode("Stale local", scene);
+        const staleSubtree = new TransformNode("Stale subtree", scene);
+        for (const source of [retained, trigger, staleLocal, staleSubtree]) {
+            source.accessibilityTag = { description: source.name };
+            scene.meshes.push(source);
+        }
+        const manager = new ActionManager(scene);
+        manager.isRecursive = true;
+        staleSubtree.actionManager = manager;
+        const renderer = HTMLTwinRenderer.Render(scene, { parentElement: document.body });
+        staleLocal.name = "Queued local";
+        manager.registerAction(new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {}));
+        scene.meshes.splice(scene.meshes.indexOf(staleLocal), 1);
+        scene.meshes.splice(scene.meshes.indexOf(staleSubtree), 1);
+        let reentered = false;
+        Object.defineProperty(trigger, "_accessibilityTabOrder", {
+            configurable: true,
+            get: () => {
+                if (!reentered) {
+                    reentered = true;
+                    retained.accessibilityTag = { description: "Reentrant retained" };
+                }
+                return undefined;
+            },
+        });
+        renderer.refresh();
+        await Promise.resolve();
+        manager.unregisterAction(manager.actions[0]!);
+        await Promise.resolve();
+        const internals = renderer as unknown as { _nodes: Map<unknown, unknown>; _managers: Map<unknown, unknown> };
+        const result = {
+            staleLocal: renderer.view.element.textContent?.includes("Queued local") ?? false,
+            staleSubtree: renderer.view.element.textContent?.includes("Stale subtree") ?? false,
+            retained: renderer.view.element.textContent?.includes("Reentrant retained") ?? false,
+            nodeCount: internals._nodes.size,
+            managerCount: internals._managers.size,
+        };
+        scene.dispose();
+        return result;
+    }, urls);
+    expect(result).toEqual({ staleLocal: false, staleSubtree: false, retained: true, nodeCount: 2, managerCount: 0 });
+});
+
 test("F02 recursive compat action changes reconcile descendants", async ({ page }) => {
     const result = await page.evaluate(async (urls) => {
         const { Scene }: typeof CompatScene = await import(urls.scene);
@@ -740,10 +875,15 @@ test("F07 automatic overlay geometry coalesces, skips hidden work, diffs writes,
             api.setHtmlOverlayVisible(overlay, false);
             window.dispatchEvent(new Event("resize"));
             const hiddenQueued = callbacks.size;
-            left = 30;
+            left = 25;
             api.updateHtmlOverlay(overlay);
             const explicitLeft = overlay.element.style.left;
+            left = 30;
+            window.dispatchEvent(new Event("scroll"));
             api.setHtmlOverlayVisible(overlay, true);
+            const revealLeft = overlay.element.style.left;
+            const revealQueued = callbacks.size;
+            window.dispatchEvent(new Event("resize"));
             const pending = [...callbacks.keys()][0];
             api.disposeHtmlOverlay(overlay);
             return {
@@ -753,6 +893,8 @@ test("F07 automatic overlay geometry coalesces, skips hidden work, diffs writes,
                 unchangedWrites,
                 hiddenQueued,
                 explicitLeft,
+                revealLeft,
+                revealQueued,
                 cancelledPending: pending !== undefined && cancelled.includes(pending),
             };
         } finally {
@@ -766,7 +908,9 @@ test("F07 automatic overlay geometry coalesces, skips hidden work, diffs writes,
         coalescedReads: 1,
         unchangedWrites: 0,
         hiddenQueued: 0,
-        explicitLeft: "30px",
+        explicitLeft: "25px",
+        revealLeft: "30px",
+        revealQueued: 0,
         cancelledPending: true,
     });
 });

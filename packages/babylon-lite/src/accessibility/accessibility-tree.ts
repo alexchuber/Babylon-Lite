@@ -67,6 +67,8 @@ export interface AccessibilityNodeOptions {
     target?: object;
     /** A real native control to host instead of generating a button or description. */
     element?: HTMLElement;
+    /** @internal Adapter-derived flags do not become authored accessibility state. */
+    _derivedState?: boolean;
 }
 
 /** Logical object. Change its state through {@link updateAccessibilityNode}. */
@@ -82,6 +84,10 @@ export interface AccessibilityNode {
     _children: AccessibilityNode[];
     /** @internal Dispatch-time source state, independent of queued DOM reconciliation. */
     _available?: () => boolean;
+    /** @internal */
+    _authoredHidden?: boolean;
+    /** @internal */
+    _authoredDisabled?: boolean;
 }
 
 /** @internal Completed mutations consumed by incremental views. */
@@ -205,12 +211,14 @@ function validateElement(tree: AccessibilityTree, element: HTMLElement | undefin
     }
 }
 
-function validateAuthoredState(options: AccessibilityNodeOptions, tag: AccessibilityTag | null): void {
+function validateAuthoredState(options: AccessibilityNodeOptions, tag: AccessibilityTag | null, node?: AccessibilityNode): void {
     for (const [state, aria] of [
         ["hidden", "aria-hidden"],
         ["disabled", "aria-disabled"],
     ] as const) {
-        if (options[state] !== undefined && tag?.aria?.[aria] != null && String(options[state]) !== String(tag.aria[aria])) {
+        const authoredKey = state === "hidden" ? "_authoredHidden" : "_authoredDisabled";
+        const authoredState = !options._derivedState && options[state] !== undefined ? options[state] : node?.[authoredKey];
+        if (authoredState !== undefined && tag?.aria?.[aria] != null && String(authoredState) !== String(tag.aria[aria])) {
             throw new Error(`Conflicting accessibility state: ${state} and ${aria}.`);
         }
     }
@@ -249,6 +257,8 @@ export function addAccessibilityNode(tree: AccessibilityTree, options: Accessibi
         element: options.element,
         children,
         _children: children,
+        _authoredHidden: !options._derivedState ? options.hidden : undefined,
+        _authoredDisabled: !options._derivedState ? options.disabled : undefined,
     };
     tree._nodes.add(node);
     const siblings = node.parent?._children ?? tree._roots;
@@ -271,7 +281,7 @@ function detach(tree: AccessibilityTree, node: AccessibilityNode): void {
 export function updateAccessibilityNode(tree: AccessibilityTree, node: AccessibilityNode, patch: AccessibilityNodeOptions): void {
     requireTree(tree, node);
     const tag = "tag" in patch ? _snapshotAccessibilityTag(patch.tag) : node.tag;
-    validateAuthoredState(patch, tag);
+    validateAuthoredState(patch, tag, node);
     if (patch.before && (!tree._nodes.has(patch.before) || patch.before.parent !== (patch.parent === undefined ? node.parent : patch.parent))) {
         throw new Error("Accessibility ordering requires a sibling in the same tree.");
     }
@@ -310,9 +320,15 @@ export function updateAccessibilityNode(tree: AccessibilityTree, node: Accessibi
     }
     if (patch.hidden !== undefined) {
         node.hidden = patch.hidden;
+        if (!patch._derivedState) {
+            node._authoredHidden = patch.hidden;
+        }
     }
     if (patch.disabled !== undefined) {
         node.disabled = patch.disabled;
+        if (!patch._derivedState) {
+            node._authoredDisabled = patch.disabled;
+        }
     }
     if ("target" in patch) {
         node.target = patch.target;
@@ -337,6 +353,8 @@ function release(tree: AccessibilityTree, node: AccessibilityNode): void {
     node.element = undefined;
     node.tag = null;
     node._available = undefined;
+    node._authoredHidden = undefined;
+    node._authoredDisabled = undefined;
     tree._nodes.delete(node);
     changes(tree).removed.add(node);
 }

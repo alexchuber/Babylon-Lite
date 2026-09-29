@@ -10,6 +10,117 @@ import type { Mesh } from "../../../packages/babylon-lite/src/mesh/mesh";
 import { removeFromScene } from "../../../packages/babylon-lite/src/scene/scene-remove";
 
 describe("camera membership boundaries", () => {
+    it("caches hierarchy roots during a deep canonical initial refresh", () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const sources = [createTransformNode("Root")];
+        for (let index = 0; index < 63; index++) {
+            const child = createTransformNode(`Depth ${index}`);
+            setParent(child, sources.at(-1)!);
+            sources.push(child);
+        }
+        let parentReads = 0;
+        for (const source of sources) {
+            let parent = source.parent;
+            Object.defineProperty(source, "parent", {
+                configurable: true,
+                enumerable: true,
+                get: () => {
+                    parentReads++;
+                    return parent;
+                },
+                set: (next) => {
+                    parent = next;
+                },
+            });
+            scene.meshes.push(source as unknown as Mesh);
+        }
+
+        const adapter = createSceneAccessibility(scene);
+
+        expect(parentReads).toBeLessThanOrEqual(sources.length * 6);
+        expect(adapter._membershipTokens.automatic.size).toBe(1);
+        scene.meshes.length = 0;
+        disposeScene(scene);
+    });
+
+    it("normalizes automatic provenance after post-add chain assembly and splitting", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const sources = Array.from({ length: 32 }, (_, index) => createTransformNode(`Independent ${index}`));
+        const camera = createFreeCamera({ x: 0, y: 0, z: -5 }, { x: 0, y: 0, z: 0 });
+        const replacement = createFreeCamera({ x: 0, y: 0, z: -10 }, { x: 0, y: 0, z: 0 });
+        const adapter = createSceneAccessibility(scene, { roots: [sources[0]!] });
+        for (const source of sources) {
+            addToScene(scene, source);
+        }
+        addToScene(scene, camera);
+        for (let index = 1; index < sources.length; index++) {
+            setParent(sources[index]!, sources[index - 1]!);
+        }
+        camera.parent = sources.at(-1)!;
+        scene.camera = camera;
+        const focusedNode = getAccessibilityNode(adapter, sources.at(-1)!)!;
+        const cameraNode = getAccessibilityNode(adapter, camera)!;
+
+        await Promise.resolve();
+
+        const automaticMemberships = (): number =>
+            [...adapter._bindings.values()].reduce(
+                (count, binding) => count + [...binding.memberships].filter((sourceMembership) => sourceMembership.kind === "automatic").length,
+                0
+            );
+        expect(automaticMemberships()).toBe(sources.length + 1);
+        expect(adapter._membershipTokens.automatic.size).toBe(1);
+        expect(getAccessibilityNode(adapter, sources.at(-1)!)).toBe(focusedNode);
+        expect(focusedNode.parent).toBe(getAccessibilityNode(adapter, sources.at(-2)!));
+        expect([...adapter._bindings.get(sources[0]!)!.memberships].map((sourceMembership) => sourceMembership.kind).sort()).toEqual(["automatic", "camera", "explicit"]);
+        expect([...adapter._bindings.get(camera)!.memberships].map((sourceMembership) => sourceMembership.kind).sort()).toEqual(["automatic", "camera"]);
+
+        setParent(sources[16]!, null);
+        await Promise.resolve();
+        expect(automaticMemberships()).toBe(sources.length + 1);
+        expect(adapter._membershipTokens.automatic.size).toBe(2);
+        expect(getAccessibilityNode(adapter, sources[16]!)?.parent).toBeNull();
+        expect(getAccessibilityNode(adapter, sources.at(-1)!)).toBe(focusedNode);
+
+        scene.camera = replacement;
+        expect(getAccessibilityNode(adapter, camera)).toBe(cameraNode);
+        expect([...adapter._bindings.get(camera)!.memberships].map((sourceMembership) => sourceMembership.kind)).toEqual(["automatic"]);
+        expect([...adapter._bindings.get(replacement)!.memberships].map((sourceMembership) => sourceMembership.kind)).toEqual(["camera"]);
+
+        removeFromScene(scene, sources.at(-1)!);
+        expect(getAccessibilityNode(adapter, sources.at(-1)!)).toBeUndefined();
+        expect(automaticMemberships()).toBe(sources.length);
+        expect(getAccessibilityNode(adapter, sources.at(-2)!)).toBeDefined();
+        disposeScene(scene);
+    });
+
+    it("does not retain retired tokens when a direct parent assignment joins an existing hierarchy", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const adapter = createSceneAccessibility(scene);
+        const root = createTransformNode("Root");
+        const middle = createTransformNode("Middle");
+        const leaf = createTransformNode("Leaf");
+        const added = createTransformNode("Added");
+        for (const source of [root, middle, leaf]) {
+            addToScene(scene, source);
+        }
+        middle.parent = root;
+        leaf.parent = middle;
+        await Promise.resolve();
+        addToScene(scene, added);
+        added.parent = leaf;
+
+        await Promise.resolve();
+
+        const automaticMemberships = [...adapter._bindings.values()].reduce(
+            (count, binding) => count + [...binding.memberships].filter((sourceMembership) => sourceMembership.kind === "automatic").length,
+            0
+        );
+        expect(automaticMemberships).toBe(4);
+        expect(adapter._membershipTokens.automatic.size).toBe(1);
+        disposeScene(scene);
+    });
+
     it.each(["deep", "wide"] as const)("records one canonical hierarchy membership for a %s addition", (shape) => {
         const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
         const adapter = createSceneAccessibility(scene);

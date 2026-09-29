@@ -32,6 +32,7 @@ interface NodeBinding {
     node: AccessibilityNode;
     unsubscribe: (() => void)[];
     memberships: Set<SceneMembership>;
+    pendingState?: Pick<AccessibilityNode, "tag" | "hidden" | "disabled">;
 }
 
 /** Opt-in adapter. The scene owns its binding, never the component. */
@@ -49,6 +50,8 @@ export interface SceneAccessibility {
     _disposed: boolean;
     /** @internal */
     _dirty: Set<SceneSource>;
+    /** @internal Natural parent changes that require localized automatic provenance normalization. */
+    _membershipDirty: Set<SceneSource>;
     /** @internal */
     _parents: Map<SceneSource, SceneSource | null>;
     /** @internal */
@@ -57,6 +60,8 @@ export interface SceneAccessibility {
     _explicitRoots: Set<SceneSource>;
     /** @internal Canonical hierarchy roots reported by addToScene or rebuilt from scene collections. */
     _automaticRoots: Set<SceneSource>;
+    /** @internal Exact canonical entries reported by addToScene or rebuilt from scene collections. */
+    _automaticSources: Set<SceneSource>;
     /** @internal Stable provenance tokens keep explicit, automatic, and camera membership independent. */
     _membershipTokens: {
         explicit: Map<SceneSource, SceneMembership>;
@@ -141,11 +146,13 @@ function nodeChanged(scene: SceneContext, node: unknown, added: boolean): void {
         if (isNode(node)) {
             if (added) {
                 batchAccessibilityUpdates(target.tree, () => {
+                    target._automaticSources.add(node);
                     bind(target, node, automaticMembership(target, node), true, true);
                     schedule(target, node);
                 });
             } else {
                 batchAccessibilityUpdates(target.tree, () => {
+                    target._automaticSources.delete(node);
                     if (target._automaticRoots.delete(node)) {
                         const token = target._membershipTokens.automatic.get(node);
                         if (token) {
@@ -164,11 +171,12 @@ function disposed(node: SceneSource): boolean {
     return "_disposed" in node && node._disposed === true;
 }
 
-function sourceState(source: SceneSource, tag = getAccessibilityTag(source)): Pick<AccessibilityNode, "tag" | "hidden" | "disabled"> {
+function sourceState(source: SceneSource, tag = getAccessibilityTag(source)): Pick<AccessibilityNode, "tag" | "hidden" | "disabled"> & { _derivedState: true } {
     return {
         tag: tag && (!("visible" in source) || source.visible !== false) ? _snapshotAccessibilityTag({ ...tag, name: tag.name ?? tag.description ?? source.name }) : null,
         hidden: disposed(source) || tag?.hidden === true,
         disabled: tag?.disabled === true,
+        _derivedState: true,
     };
 }
 
@@ -194,12 +202,17 @@ function sourceAvailable(adapter: SceneAccessibility, source: SceneSource): bool
     return true;
 }
 
-function schedule(adapter: SceneAccessibility, source: SceneSource): void {
+function schedule(adapter: SceneAccessibility, source: SceneSource, membershipChanged = false): void {
     const binding = adapter._bindings.get(source);
     if (binding) {
-        Object.assign(binding.node, sourceState(source));
+        binding.pendingState ??= { tag: binding.node.tag, hidden: binding.node.hidden, disabled: binding.node.disabled };
+        const state = sourceState(source);
+        Object.assign(binding.node, { tag: state.tag, hidden: state.hidden, disabled: state.disabled });
     }
     adapter._dirty.add(source);
+    if (membershipChanged) {
+        adapter._membershipDirty.add(source);
+    }
     if (adapter._pending || adapter._disposed) {
         return;
     }
@@ -208,10 +221,7 @@ function schedule(adapter: SceneAccessibility, source: SceneSource): void {
         adapter._pending = false;
         if (!adapter._disposed) {
             batchAccessibilityUpdates(adapter.tree, () => {
-                for (const node of adapter._dirty) {
-                    updateSource(adapter, node);
-                }
-                adapter._dirty.clear();
+                flushDirty(adapter);
             });
         }
     });
@@ -240,9 +250,10 @@ function bind(adapter: SceneAccessibility, source: SceneSource, sourceMembership
     adapter._bindings.set(source, binding);
     if (!existing) {
         node._available = () => sourceAvailable(adapter, source);
-        for (const property of ["name", "visible", "parent", "_disposed"]) {
+        for (const property of ["name", "visible", "_disposed"]) {
             binding.unsubscribe.push(observeProperty(source, property, () => schedule(adapter, source)));
         }
+        binding.unsubscribe.push(observeProperty(source, "parent", () => schedule(adapter, source, true)));
         const observers = (tagObservers ??= new WeakMap());
         let listeners = observers.get(source);
         if (!listeners) {
@@ -347,10 +358,7 @@ function isAncestor(adapter: SceneAccessibility, ancestor: SceneSource, source: 
 function updateCamera(adapter: SceneAccessibility): void {
     batchAccessibilityUpdates(adapter.tree, () => {
         // A same-task reparent may retain the old camera before its queued source update.
-        for (const source of adapter._dirty) {
-            updateSource(adapter, source);
-        }
-        adapter._dirty.clear();
+        flushDirty(adapter);
         const cameraMembership = adapter._membershipTokens.camera;
         const previous = adapter._memberships.get(cameraMembership);
         adapter._memberships.delete(cameraMembership);
@@ -417,6 +425,10 @@ function updateSource(adapter: SceneAccessibility, source: SceneSource): void {
         unbind(adapter, source);
         return;
     }
+    if (binding.pendingState) {
+        Object.assign(binding.node, binding.pendingState);
+        binding.pendingState = undefined;
+    }
     const sourceParent = adapter._parents.has(source) ? adapter._parents.get(source) : parentOf(source);
     if (isNode(sourceParent)) {
         for (const sourceMembership of binding.memberships) {
@@ -430,18 +442,179 @@ function updateSource(adapter: SceneAccessibility, source: SceneSource): void {
     });
 }
 
-function hierarchyRoot(source: SceneSource): SceneSource {
-    const visited = new Set<SceneSource>();
-    let root = source;
-    while (!visited.has(root)) {
-        visited.add(root);
-        const parent = parentOf(root);
-        if (!isNode(parent)) {
-            break;
+function hierarchyRoots(sources: readonly SceneSource[]): Map<SceneSource, SceneSource> {
+    const roots = new Map<SceneSource, SceneSource>();
+    const path: SceneSource[] = [];
+    const pending = new Set<SceneSource>();
+    for (const source of sources) {
+        if (roots.has(source)) {
+            continue;
         }
-        root = parent;
+        path.length = 0;
+        pending.clear();
+        let current = source;
+        let root: SceneSource;
+        for (;;) {
+            const cached = roots.get(current);
+            if (cached) {
+                root = cached;
+                break;
+            }
+            path.push(current);
+            pending.add(current);
+            const parent = parentOf(current);
+            if (!isNode(parent) || pending.has(parent)) {
+                root = current;
+                break;
+            }
+            current = parent;
+        }
+        for (const member of path) {
+            roots.set(member, root);
+        }
     }
-    return root;
+    return roots;
+}
+
+interface AutomaticComponent {
+    root: SceneSource;
+    automaticSources: SceneSource[];
+    covered: Set<SceneSource>;
+}
+
+function reconcileAutomaticMemberships(adapter: SceneAccessibility, dirtySources: readonly SceneSource[]): void {
+    if (!dirtySources.length) {
+        return;
+    }
+    const seeds = new Set<SceneSource>(dirtySources);
+    for (const source of dirtySources) {
+        const previousParent = adapter._bindings.get(source)?.node.parent?.target;
+        if (isNode(previousParent)) {
+            seeds.add(previousParent);
+        }
+        for (const sourceMembership of adapter._bindings.get(source)?.memberships ?? []) {
+            if (sourceMembership.kind === "automatic") {
+                for (const member of adapter._memberships.get(sourceMembership) ?? []) {
+                    seeds.add(member);
+                }
+            }
+        }
+    }
+    const roots = hierarchyRoots([...seeds]);
+    const componentSeeds = new Map<SceneSource, SceneSource[]>();
+    for (const source of seeds) {
+        const root = roots.get(source)!;
+        const rootSeeds = componentSeeds.get(root);
+        if (rootSeeds) {
+            rootSeeds.push(source);
+        } else {
+            componentSeeds.set(root, [source]);
+        }
+    }
+    const components: AutomaticComponent[] = [];
+    const affected = new Set<SceneSource>();
+    const oldMemberships = new Set<SceneMembership>();
+    for (const [root, rootSeeds] of componentSeeds) {
+        const sources: SceneSource[] = [];
+        const automaticSources: SceneSource[] = [];
+        const pending = [root, ...rootSeeds];
+        const visited = new Set<SceneSource>();
+        while (pending.length) {
+            const source = pending.pop()!;
+            if (visited.has(source)) {
+                continue;
+            }
+            visited.add(source);
+            sources.push(source);
+            if (adapter._automaticSources.has(source)) {
+                automaticSources.push(source);
+            }
+            for (const child of source.children) {
+                if (isNode(child)) {
+                    pending.push(child);
+                }
+            }
+        }
+        const covered = new Set<SceneSource>();
+        for (const source of automaticSources) {
+            const descendants = [source];
+            while (descendants.length) {
+                const descendant = descendants.pop()!;
+                if (covered.has(descendant)) {
+                    continue;
+                }
+                covered.add(descendant);
+                for (const child of descendant.children) {
+                    if (isNode(child)) {
+                        descendants.push(child);
+                    }
+                }
+            }
+            const sourceParent = parentOf(source);
+            for (let current: SceneSource | null = isNode(sourceParent) ? sourceParent : null; current && !covered.has(current);) {
+                covered.add(current);
+                const parent = parentOf(current);
+                current = isNode(parent) ? parent : null;
+            }
+        }
+        for (const source of sources) {
+            affected.add(source);
+            for (const sourceMembership of adapter._bindings.get(source)?.memberships ?? []) {
+                if (sourceMembership.kind === "automatic") {
+                    oldMemberships.add(sourceMembership);
+                }
+            }
+        }
+        components.push({ root, automaticSources, covered });
+    }
+    for (const source of affected) {
+        const binding = adapter._bindings.get(source);
+        for (const sourceMembership of [...(binding?.memberships ?? [])]) {
+            if (sourceMembership.kind === "automatic") {
+                binding!.memberships.delete(sourceMembership);
+            }
+        }
+    }
+    for (const sourceMembership of oldMemberships) {
+        for (const source of adapter._memberships.get(sourceMembership) ?? []) {
+            adapter._bindings.get(source)?.memberships.delete(sourceMembership);
+            affected.add(source);
+        }
+        adapter._memberships.delete(sourceMembership);
+        if (sourceMembership.root) {
+            adapter._automaticRoots.delete(sourceMembership.root);
+            if (adapter._membershipTokens.automatic.get(sourceMembership.root) === sourceMembership) {
+                adapter._membershipTokens.automatic.delete(sourceMembership.root);
+            }
+        }
+    }
+    for (const component of components) {
+        if (!component.automaticSources.length) {
+            continue;
+        }
+        adapter._automaticRoots.add(component.root);
+        const sourceMembership = membership(adapter, "automatic", component.root);
+        for (const source of component.covered) {
+            bind(adapter, source, sourceMembership, false, true);
+        }
+    }
+    for (const source of affected) {
+        const binding = adapter._bindings.get(source);
+        if (binding && binding.memberships.size === 0) {
+            unbind(adapter, source, false);
+        }
+    }
+}
+
+function flushDirty(adapter: SceneAccessibility): void {
+    const dirty = [...adapter._dirty];
+    const membershipDirty = [...adapter._membershipDirty];
+    adapter._dirty.clear();
+    adapter._membershipDirty.clear();
+    reconcileAutomaticMemberships(adapter, membershipDirty);
+    for (const source of dirty) {
+        updateSource(adapter, source);
+    }
 }
 
 /** Refresh after direct scene-array edits. Canonical mutations update only changed source nodes. */
@@ -451,9 +624,16 @@ export function updateSceneAccessibility(adapter: SceneAccessibility): void {
     }
     batchAccessibilityUpdates(adapter.tree, () => {
         const canonicalSources = [...adapter._scene.meshes, ...adapter._scene.lights];
+        adapter._dirty.clear();
+        adapter._membershipDirty.clear();
+        adapter._automaticSources.clear();
+        for (const source of canonicalSources) {
+            adapter._automaticSources.add(source);
+        }
+        const roots = hierarchyRoots(canonicalSources);
         const canonicalRoots = new Set<SceneSource>();
         for (const source of canonicalSources) {
-            canonicalRoots.add(hierarchyRoot(source));
+            canonicalRoots.add(roots.get(source)!);
         }
         adapter._automaticRoots.clear();
         for (const root of canonicalRoots) {
@@ -469,7 +649,7 @@ export function updateSceneAccessibility(adapter: SceneAccessibility): void {
             binding.memberships.clear();
         }
         for (const source of canonicalSources) {
-            const root = hierarchyRoot(source);
+            const root = roots.get(source)!;
             bind(adapter, source, membership(adapter, "automatic", root), true, true);
         }
         for (const root of adapter._explicitRoots) {
@@ -550,10 +730,12 @@ export function createSceneAccessibility(scene: SceneContext, options: SceneAcce
         _pending: false,
         _disposed: false,
         _dirty: new Set(),
+        _membershipDirty: new Set(),
         _parents: new Map(),
         _removed: new WeakSet(),
         _explicitRoots: new Set(options.roots ?? []),
         _automaticRoots: new Set(),
+        _automaticSources: new Set(),
         _membershipTokens: {
             explicit: new Map(),
             automatic: new Map(),
@@ -596,9 +778,11 @@ export function disposeSceneAccessibility(adapter: SceneAccessibility): void {
     adapter._bindings.clear();
     adapter._explicitRoots.clear();
     adapter._automaticRoots.clear();
+    adapter._automaticSources.clear();
     adapter._membershipTokens.explicit.clear();
     adapter._membershipTokens.automatic.clear();
     adapter._dirty.clear();
+    adapter._membershipDirty.clear();
     adapter._parents.clear();
     adapter._memberships.clear();
     const scene = adapter._scene;
