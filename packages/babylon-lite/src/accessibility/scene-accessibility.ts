@@ -281,6 +281,11 @@ function isAncestor(adapter: SceneAccessibility, ancestor: SceneSource, source: 
 
 function updateCamera(adapter: SceneAccessibility): void {
     batchAccessibilityUpdates(adapter.tree, () => {
+        // A same-task reparent may retain the old camera before its queued source update.
+        for (const source of adapter._dirty) {
+            updateSource(adapter, source);
+        }
+        adapter._dirty.clear();
         const previous = adapter._memberships.get(null);
         adapter._memberships.delete(null);
         for (const source of previous ?? []) {

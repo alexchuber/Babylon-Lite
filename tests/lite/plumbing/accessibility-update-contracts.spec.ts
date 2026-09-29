@@ -35,7 +35,7 @@ for (const configuration of ["two views", "earlier observer"] as const) {
                 api.updateAccessibilityNode(tree, action, { tag: { name: "Renamed action", disabled: true, eventHandler: { click } } });
                 const disabled = snapshot();
                 api.removeAccessibilityNode(tree, action);
-                const removed = views.map((view, index) => !api.getHtmlTwinElement(view, action) && !originalElements[index].isConnected);
+                const removed = views.map((view, index) => !api.getHtmlTwinElement(view, action) && !originalElements[index]!.isConnected);
                 const notifications = observed;
                 api.disposeAccessibilityTree(tree);
                 return { renamed, disabled, removed, notifications };

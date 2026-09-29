@@ -338,9 +338,13 @@ Canonical add/remove operations feed `sceneNodeChanged(scene, node, added)` thro
 
 The scene's `camera` property is also observed reversibly. Replacement or clearing updates camera-derived membership without refreshing unrelated scene roots. An old camera remains bound when an explicit root, canonical addition, or retained transform/semantic ancestor relationship still needs it. Setting a semantic parent propagates that membership in the same batch; reparenting away retires obsolete ancestor memberships when camera membership changes. Explicit refresh establishes retained dependencies before removing unneeded bindings. Multiple views share the property observer; the final subscriber restores the descriptor and its current value.
 
+Before retiring camera-derived bindings, camera changes process queued dirty sources within the same tree batch. This establishes dependencies from same-task natural reparenting without scanning unrelated roots, preserving retained camera handles, semantic overrides, DOM elements, and focus.
+
 Source notifications update actionable semantic state immediately, then queue one microtask per adapter. The microtask updates dirty source nodes inside a tree batch. Dispatch and focus also consult current source ancestry and semantic overrides, closing the interval before a queued reparent reaches the DOM. A full explicit refresh visits reachable scene contents and removes stale bindings. There is no per-frame whole-scene semantic scan.
 
 Tree notifications carry internal dirty-node, subtree, sibling-container, and removal sets. Views update those items, propagate inherited disabled state only through affected subtrees, and reorder only changed sibling containers. Text and attributes are compared before writing, so unrelated metadata changes do not rewrite live regions. Initial mount and explicit `updateHtmlTwin` perform a full refresh. Stable items retain elements and listeners; switching between a generated description and button replaces that element and preserves logical focus when appropriate.
+
+Each dispatch exposes its change snapshot to every subscriber. Nested notifications restore the enclosing snapshot after their complete dispatch; the outer dispatch clears its snapshot even with no subscribers or observer failures. Observer errors still propagate after all subscribers have run.
 
 The native source-state mapping is:
 

@@ -151,12 +151,15 @@ function notify(tree: AccessibilityTree): void {
     tree._changes = tree._pendingChanges;
     tree._pendingChanges = undefined;
     const errors: unknown[] = [];
-    for (const listener of [...tree._listeners]) {
-        try {
-            listener();
-        } catch (error) {
-            errors.push(error);
+    try {
+        for (const listener of [...tree._listeners]) {
+            try {
+                listener();
+            } catch (error) {
+                errors.push(error);
+            }
         }
+    } finally {
         tree._changes = previous;
     }
     if (errors.length) {
