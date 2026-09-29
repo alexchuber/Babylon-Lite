@@ -7,6 +7,7 @@ import {
     removeAccessibilityNode,
     updateAccessibilityNode,
 } from "../../../packages/babylon-lite/src/accessibility/accessibility-tree";
+import type { AccessibilityNode, AccessibilityTag } from "../../../packages/babylon-lite/src/accessibility/accessibility-tree";
 
 describe("accessibility tree", () => {
     it("releases notification snapshots even when no listeners are mounted", () => {
@@ -113,6 +114,46 @@ describe("accessibility tree", () => {
         expect(child.tag?.aria?.["aria-pressed"]).toBe(false);
         expect(() => updateAccessibilityNode(tree, child, { parent, tag: { disabled: true, aria: { "aria-disabled": false } } })).toThrow(/conflicting/i);
         expect(child.parent).toBeNull();
+    });
+
+    it("rejects authored node-state conflicts and invalid handlers before publication", () => {
+        const tree = createAccessibilityTree();
+        const invalidHandler = { click: true } as unknown as AccessibilityTag["eventHandler"];
+        expect(() => addAccessibilityNode(tree, { hidden: true, tag: { aria: { "aria-hidden": false } } })).toThrow(/conflicting/i);
+        expect(() => addAccessibilityNode(tree, { disabled: false, tag: { aria: { "aria-disabled": true } } })).toThrow(/conflicting/i);
+        expect(() => addAccessibilityNode(tree, { tag: { eventHandler: invalidHandler } })).toThrow(/function/i);
+        expect(tree.roots).toEqual([]);
+
+        const omittedState = addAccessibilityNode(tree, { hidden: undefined, tag: { aria: { "aria-hidden": true } } });
+        expect(omittedState).toMatchObject({ hidden: false, tag: { aria: { "aria-hidden": true } } });
+        removeAccessibilityNode(tree, omittedState);
+        const node = addAccessibilityNode(tree, { tag: { name: "Original" } });
+        expect(() => updateAccessibilityNode(tree, node, { hidden: false, tag: { aria: { "aria-hidden": true } } })).toThrow(/conflicting/i);
+        expect(() => updateAccessibilityNode(tree, node, { tag: { eventHandler: invalidHandler } })).toThrow(/function/i);
+        expect(node).toMatchObject({ hidden: false, tag: { name: "Original" } });
+    });
+
+    it("invalidates descendants only when effective local availability changes", () => {
+        const tree = createAccessibilityTree();
+        const parent = addAccessibilityNode(tree, {});
+        const child = addAccessibilityNode(tree, { parent });
+        const snapshots: { nodes: AccessibilityNode[]; subtrees: AccessibilityNode[] }[] = [];
+        onAccessibilityTreeChanged(tree, () => {
+            snapshots.push({ nodes: [...tree._changes!.nodes], subtrees: [...tree._changes!.subtrees] });
+        });
+
+        updateAccessibilityNode(tree, parent, { disabled: false });
+        updateAccessibilityNode(tree, parent, { hidden: true });
+        updateAccessibilityNode(tree, parent, { hidden: false });
+        updateAccessibilityNode(tree, parent, { tag: { aria: { "aria-hidden": true } } });
+
+        expect(snapshots).toEqual([
+            { nodes: [parent], subtrees: [] },
+            { nodes: [parent], subtrees: [parent] },
+            { nodes: [parent], subtrees: [parent] },
+            { nodes: [parent], subtrees: [parent] },
+        ]);
+        expect(child.parent).toBe(parent);
     });
 
     it("notifies changes and removes descendants without retaining callbacks after disposal", () => {

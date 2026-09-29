@@ -15,9 +15,12 @@ import type { Light } from "../lights/lights.js";
 import type { TransformNode } from "../meshes/meshes.js";
 import type { Material } from "../materials/materials.js";
 
+/** @internal Scope carried by compat node mutations into optional semantic projections. */
+export type AccessibilityNodeMutation = "local" | "subtree";
+
 export abstract class AbstractScene {
     /** @internal Optional semantic adapter notification; no accessibility work before mounting. */
-    public _accessibilityNodeChanged?: (node: Node) => void;
+    public _accessibilityNodeChanged?: (node: Node, mutation?: AccessibilityNodeMutation) => void;
     /** @internal Optional validation before publishing new semantic metadata. */
     public _accessibilityTagChanging?: (node: Node, tag: IAccessibilityTag | null) => void;
     /**

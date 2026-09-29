@@ -85,7 +85,7 @@ Tags are defensive frozen snapshots. The implementation copies and freezes the t
 
 Names and descriptions are plain text. Generated leaves use `name ?? description` as visible text. Named roles such as images, groups, and regions also receive `aria-label`, including when they have no children. Authored `aria-label` overrides this fallback; a valid `aria-labelledby` takes browser naming precedence. When both name and description exist, `description` also becomes `aria-description`. The scene adapter supplies a final name fallback from the source node's `name`.
 
-ARIA keys must match `^aria-[a-z-]+$`; numeric values must be finite. Null or undefined values remove attributes. Booleans serialize as strings. Explicit `hidden`/`disabled` values must agree with corresponding authored `aria-hidden`/`aria-disabled` values. Tags accept only the four listed event-handler keys. Positive native `tabIndex` values throw.
+ARIA keys must match `^aria-[a-z-]+$`; numeric values must be finite. Null or undefined values remove attributes. Booleans serialize as strings. Explicit node or tag `hidden`/`disabled` values must agree with corresponding authored `aria-hidden`/`aria-disabled` values. Omitted state can inherit from another source. Tags accept only the four listed event-handler keys, and each supplied non-null handler must be a function. Positive native `tabIndex` values throw.
 
 Tree membership and ordering follow these rules:
 
@@ -127,6 +127,8 @@ A logical item owns an outer wrapper, its semantic element, and a separate child
 An item is actionable when it has a click or context-menu callback. Actionable generated items require a nonempty name and accept only `role="button"` as an explicit role. Non-actionable generated items accept `group`, `region`, `note`, `img`, `heading`, `status`, `log`, `alert`, `article`, `paragraph`, `list`, `listitem`, `none`, or `presentation`. This is not a complete ARIA-widget validator. Authors remain responsible for role-specific semantics.
 
 Supplying `element` adopts the original DOM instead of creating a description or button. The element must be in the host document, outside canvas/inert/overlay hosting, and must not contain the twin. A lazily allocated registry tracks mounted borrowed elements and removes entries on disposal. Mounts and updates reject exact, ancestor, and descendant ownership overlap across twins before moving content or changing the model. A tree also rejects overlapping owners within its own membership.
+
+Generated items can appear in multiple twins. A tree that borrows caller-owned DOM can mount only one twin because one element cannot occupy multiple document locations. Additions and element replacements reject this case before publishing a tree mutation or moving DOM.
 
 Native form state remains authoritative. Both hosting APIs preflight form-associated elements throughout the borrowed subtree. A move that loses an implicit external form owner throws. Moving the whole form, hosting inside the same form, or retaining a valid explicit `form` association is allowed. The library does not generate form IDs or rewrite submission semantics.
 
@@ -203,7 +205,7 @@ export function createNativeControl(options: NativeControlOptions): NativeContro
 export function disposeNativeControl(control: NativeControl): void;
 ```
 
-`createNativeControl` requires a nonempty label and uses `options.document ?? document`. The control factory returns live DOM; `input` is deliberately typed as `HTMLElement` because not every kind is an input.
+`createNativeControl` rejects unsupported kinds, requires a nonempty label, and uses `options.document ?? document`. It validates kind-specific input before creating DOM. The control factory returns live DOM; `input` is deliberately typed as `HTMLElement` because not every kind is an input.
 
 | Kind                | `element` / `input` | Label and event contract                                                              |
 | ------------------- | ------------------- | ------------------------------------------------------------------------------------- |
@@ -272,7 +274,7 @@ Scene animation is enabled by default. The gate suppresses automatic scene-group
 
 The gate preserves elapsed time without replaying disabled time. It does not stop rendering, physics, audio, input, or ordinary application callbacks. Compat `Scene.animationsEnabled` also gates its property, blend, fallback animatable, and structural-group paths. It deliberately avoids Babylon.js's possible disabled-wall-time catch-up. Reduced-motion policy belongs to the application.
 
-The unmute button uses `type="button"`, a localized `aria-label` defaulting to `"Enable audio"`, and a visible focus outline with forced-colors support. Empty labels use the default. During unlock it disables itself and sets `aria-busy`; errors reach `onError`, then the owner window's `reportError` fallback, or a queued throw. Disposal removes its listener, styles, button, and audio-state subscription.
+The unmute button uses `type="button"`, a localized `aria-label` defaulting to `"Enable audio"`, and a visible focus outline with forced-colors support. Empty labels use the default. One control per document claims `id="babylonUnmuteButton"` when the ID is available. Other controls omit it to prevent duplicates. When the owner is disposed, the next control claims the ID. During unlock the button disables itself and sets `aria-busy`; errors reach `onError`, then the owner window's `reportError` fallback, or a queued throw. Disposal removes the listener, clears the closure that removes it, and removes the styles, button, and audio-state subscription.
 
 The compat package exposes the following facade:
 
@@ -332,17 +334,23 @@ Keyboard constants are `OnKeyDownTrigger = 14` and `OnKeyUpTrigger = 15`. Three 
 
 The tree owns ordered roots, membership, subscribers, and mounted-view validators. Its public readonly arrays alias internal mutable arrays. A node owns its child array and references caller data; it never owns a mesh, scene, audio engine, or DOM handler supplied by the application.
 
-Each scene adapter owns a map from sources to logical nodes, unsubscribe functions, explicit/captured roots, semantic-parent overrides, removed-node tracking, and a dirty set. Membership sets distinguish each independent root/addition from the active camera. External lazy weak registries hold tags, tag observers, tag validators, shared property watches, and scene adapter membership.
+The package build appends accessibility modules, `animation/scene-animation`, `animation/scene-animation-manager`, `scene/scene-dispose-registration`, and `scene/scene-html-twin` after the established library entry graph. The stable partition preserves discovery order within both groups. Error allocation uses three groups: established modules, compute modules, and the same optional modules. Paths remain lexical within each group.
 
-Canonical add/remove operations feed `sceneNodeChanged(scene, node, added)` through an optional internal callback. The first adapter installs its consumer; the last disposal restores the previous callback. Source components never hold a scene or an adapter. Observation wraps `name`, `visible`, `parent`, and `_disposed` reversibly, preserves existing accessors, and rejects non-configurable/read-only properties. Shared property watches restore the original descriptor only after their last subscriber leaves.
+`scripts/lite-optional-build-module.ts` is the single classifier for both consumers. It accepts extensionless library keys and `.ts` error-plugin paths. This build-only ordering keeps existing chunks and numeric errors stable for applications that do not use these modules. It adds no runtime imports and does not change tree shaking.
+
+Each scene adapter owns a map from sources to logical nodes, unsubscribe functions, explicit roots, canonical automatic roots, semantic-parent overrides, removed-node tracking, and a dirty set. Stable provenance tokens distinguish explicit, automatic, and active-camera membership even when they share a source. One canonical hierarchy uses one automatic token, so recursive `addToScene` notifications do not duplicate descendant memberships. External lazy weak registries hold tags, tag observers, tag validators, shared property watches, and scene adapter membership.
+
+Canonical add/remove operations feed `sceneNodeChanged(scene, node, added)` through an optional internal callback. The adapter reuses an existing automatic token from the source or its bound parent, so recursive notifications do not create new memberships. The first adapter installs its consumer; the last disposal restores the previous callback. Source components never hold a scene or an adapter. Observation wraps `name`, `visible`, `parent`, and `_disposed` reversibly, preserves existing accessors, and rejects non-configurable/read-only properties. Shared property watches restore the original descriptor only after their last subscriber leaves.
 
 The scene's `camera` property is also observed reversibly. Replacement or clearing updates camera-derived membership without refreshing unrelated scene roots. An old camera remains bound when an explicit root, canonical addition, or retained transform/semantic ancestor relationship still needs it. Setting a semantic parent propagates that membership in the same batch; reparenting away retires obsolete ancestor memberships when camera membership changes. Explicit refresh establishes retained dependencies before removing unneeded bindings. Multiple views share the property observer; the final subscriber restores the descriptor and its current value.
 
 Before retiring camera-derived bindings, camera changes process queued dirty sources within the same tree batch. This establishes dependencies from same-task natural reparenting without scanning unrelated roots, preserving retained camera handles, semantic overrides, DOM elements, and focus.
 
-Source notifications update actionable semantic state immediately, then queue one microtask per adapter. The microtask updates dirty source nodes inside a tree batch. Dispatch and focus also consult current source ancestry and semantic overrides, closing the interval before a queued reparent reaches the DOM. A full explicit refresh visits reachable scene contents and removes stale bindings. There is no per-frame whole-scene semantic scan.
+Source notifications update actionable semantic state immediately, then queue one microtask per adapter. The microtask updates dirty source nodes inside a tree batch. Dispatch and focus also consult current source ancestry and semantic overrides, closing the interval before a queued reparent reaches the DOM. A full explicit refresh rebuilds automatic roots from the current scene arrays, retains explicit roots and required natural ancestors, and removes unreachable bindings. Dependency-only ancestors do not import their other children. Canonical removal releases automatic provenance but keeps the node when explicit or camera provenance still requires it. There is no per-frame whole-scene semantic scan.
 
 Tree notifications carry internal dirty-node, subtree, sibling-container, and removal sets. Views update those items, propagate inherited disabled state only through affected subtrees, and reorder only changed sibling containers. Text and attributes are compared before writing, so unrelated metadata changes do not rewrite live regions. Initial mount and explicit `updateHtmlTwin` perform a full refresh. Stable items retain elements and listeners; switching between a generated description and button replaces that element and preserves logical focus when appropriate.
+
+Compat source notifications carry local or subtree scope. Local metadata updates reconcile one wrapper. Action-manager and hierarchy changes expand direct children through one visited worklist, and only affected sibling containers are sorted. Compat `refresh()` starts from current scene collections and explicit roots, visits each direct edge once, and prunes unreachable wrappers and subscriptions.
 
 Each dispatch exposes its change snapshot to every subscriber. Nested notifications restore the enclosing snapshot after their complete dispatch; the outer dispatch clears its snapshot even with no subscribers or observer failures. Observer errors still propagate after all subscribers have run.
 
@@ -374,7 +382,7 @@ There is no accessibility shader. `showSceneFocusIndicator` projects one focused
 4. Call `projectWorldToScreenToRef` with the view matrix, view-projection matrix, viewport, backing/CSS dimensions, and camera-world floating origin when enabled.
 5. Reject corners behind the camera or outside depth `[0, 1]`. Expand valid CSS bounds by 6 pixels in each direction.
 6. If a corner cannot be projected, try the target origin and a 12-pixel box. Clamp a valid rectangle to the camera's CSS viewport.
-7. Offset by the canvas rectangle's left/top and write fixed CSS bounds. Hide the marker when there is no usable camera, canvas extent, or visible projected rectangle.
+7. Offset by the canvas rectangle's left/top and write only changed fixed CSS bounds. Change `hidden` only when marker visibility changes.
 
 The marker has `aria-hidden="true"` and `pointer-events: none`. It starts a requestAnimationFrame loop only while focused; cleanup cancels the frame and removes the marker. Scene disposal stops the loop. An offscreen target remains in the semantic tree, with focus visible on its DOM control.
 
@@ -386,9 +394,9 @@ A node moves from absent to registered, then removed. Removed handles cannot be 
 
 Scene source removal differs from direct logical subtree removal. The adapter releases the source binding and promotes still-bound logical children. Overrides pointing to a removed semantic parent return to natural parentage. Core scene removal determines which native descendants are also removed.
 
-Scene-owned adapters install an optional terminal boundary around canonical scene cleanup. After the scene becomes terminal, the boundary disposes every owned adapter before running application cleanup. Each tree drains its view subscriptions even if a focus cleanup throws. The boundary still invokes canonical scene cleanup, then rethrows one failure or aggregates multiple failures. It does not change the order or error behavior of unrelated application disposers.
+Scene-owned features register owner-specific terminal boundaries around canonical scene cleanup. Removing one registration does not overwrite a newer feature's boundary. After the scene becomes terminal, the accessibility boundary disposes every owned adapter before running the next boundary. Each tree drains its view subscriptions even if a focus cleanup throws. The chain still invokes canonical scene cleanup, then rethrows one failure or aggregates multiple failures. It does not change the order or error behavior of unrelated application disposers.
 
-Adapter disposal restores source/camera observations, clears memberships and pending work, and disposes its tree. The last adapter restores the previous optional lifecycle hooks. Tree disposal closes mounted twins. Tag snapshots remain associated with still-live caller objects.
+Adapter disposal restores source/camera observations, clears memberships and pending work, and disposes its tree. The last adapter unregisters its scene-node and terminal cleanup hooks. Tree disposal closes mounted twins. Tag snapshots remain associated with still-live caller objects.
 
 ### Input and focus
 
@@ -404,7 +412,7 @@ Initial adoption and later reconciliation preserve focus and selection in an ava
 
 Twin disposal removes library listeners/styles, releases element ownership, restores borrowed elements to their original parent/sibling where possible, and restores library-managed attributes. It returns focus to the supplied canvas only if focus was inside the twin. It does not dispose the tree or caller controls.
 
-Overlay hiding sets `hidden` and returns contained focus to the canvas. Overlay disposal disconnects resize/scroll listeners, restores the content's original parent/sibling, and removes only its host. A previously detached content element becomes detached again. The application owns native-control disposal and overlay disposal; scene disposal does not discover independent overlays.
+Overlay hiding sets `hidden`, cancels pending automatic geometry work, and returns contained focus to the canvas. Resize, scroll, and ResizeObserver signals share one animation-frame update while visible. Automatic updates compare all four bounds before writing; `updateHtmlOverlay` remains an immediate explicit update. Overlay disposal cancels scheduled work, disconnects observers/listeners, restores the content's original parent/sibling, and removes only its host. A previously detached content element becomes detached again. The application owns native-control disposal and overlay disposal; scene disposal does not discover independent overlays.
 
 Factories roll back their owned setup when mounting fails. Generic twin callbacks have synchronous DOM-event semantics and no `onError` option. Applications must handle promises in their own callbacks. Tree validation errors are synchronous; scene-driven DOM reconciliation is microtask-based.
 
@@ -443,26 +451,27 @@ Module imports, metadata, and logical trees work headlessly. DOM factories requi
 
 The following files define focused contracts. Their presence is not a claim that every test has been run in a documentation-only change.
 
-| Test file                                                             | Contract                                                                                                                               |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests/lite/unit/accessibility-tree.test.ts`                          | Identity, ordering/parentage, snapshot validation, cycles/foreign nodes, notifications, subtree disposal                               |
-| `tests/lite/unit/scene-accessibility.test.ts`                         | Early binding, scalar/tag updates, shared observations, descriptor restoration, parent overrides, removals, native self-visibility     |
-| `tests/lite/unit/scene-animation-manager.test.ts`                     | Explicit scene clock ownership, detachment, freeze/resume                                                                              |
-| `tests/lite/unit/scene-animation-tick.test.ts`                        | Scene automatic animation gating                                                                                                       |
-| `tests/lite/unit/free-camera-controls.test.ts`                        | Held-key cleanup when focus leaves canvas                                                                                              |
-| `tests/lite/unit/audio/unmute-ui.test.ts`                             | Button naming, focus CSS, unlock errors, cleanup                                                                                       |
-| `tests/lite/plumbing/accessibility.spec.ts`                           | Chromium semantics, Tab/activation, ARIA replacement, adopted editing, focus recovery, disabled descendants, failed ownership, remount |
+| Test file                                                             | Contract                                                                                                                                                                       |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tests/lite/unit/accessibility-tree.test.ts`                          | Identity, ordering/parentage, snapshot validation, cycles/foreign nodes, notifications, subtree disposal                                                                       |
+| `tests/lite/unit/scene-accessibility.test.ts`                         | Early binding, scalar/tag updates, shared observations, descriptor restoration, parent overrides, removals, native self-visibility                                             |
+| `tests/lite/unit/native-control.test.ts`                              | Runtime kind validation before DOM creation                                                                                                                                    |
+| `tests/lite/unit/scene-animation-manager.test.ts`                     | Explicit scene clock ownership, terminal detachment after cleanup errors, freeze/resume                                                                                        |
+| `tests/lite/unit/scene-animation-tick.test.ts`                        | Scene automatic animation gating                                                                                                                                               |
+| `tests/lite/unit/free-camera-controls.test.ts`                        | Held-key cleanup when focus leaves canvas                                                                                                                                      |
+| `tests/lite/unit/audio/unmute-ui.test.ts`                             | Button naming, unique selector ownership, focus CSS, unlock errors, cleanup                                                                                                    |
+| `tests/lite/plumbing/accessibility.spec.ts`                           | Chromium semantics, Tab/activation, ARIA replacement, adopted editing, focus recovery, disabled descendants, failed ownership, remount                                         |
 | `tests/lite/plumbing/accessibility-corrections.spec.ts`               | Terminal errors, cross-view ownership, form preflight/submission, leaf AX names, preflush reparent gates, focus redirection, incremental mutations, atomic manager replacement |
-| `tests/lite/plumbing/accessibility-update-contracts.spec.ts`          | AX parent/leaf transitions, structural mutation isolation, inherited state, semantic override gates |
-| `tests/lite/unit/scene-accessibility-membership.test.ts`              | Incremental camera membership, retained ancestors, and semantic overrides |
-| `tests/lite/plumbing/accessibility-integration.spec.ts`               | Native projected focus, camera isolation, GL live overlays, compat actions/keyboard/ordering and cleanup                               |
-| `tests/lite/plumbing/accessibility-example.spec.ts`                   | Runnable example controls                                                                                                              |
-| `tests/lite/plumbing/accessibility-projection.spec.ts`                | Orthographic/CSS/viewport/DPI/floating-origin focus, near-plane fallback, forced colors, live form ownership and restoration           |
-| `packages/babylon-lite-compat/tests/accessibility.test.ts`            | Tag bridge and exact public import mapping                                                                                             |
-| `packages/babylon-lite-compat/tests/actions.test.ts`                  | Trigger constants, original events, filters, conditions, existing chaining                                                             |
-| `packages/babylon-lite-compat/tests/scene-animations-enabled.test.ts` | Compat scene animation gate                                                                                                            |
-| `tests/lite/build/accessibility-treeshake.test.ts`                    | Unused feature elimination and renderer-neutral dependency isolation                                                                   |
-| `tests/lite/build/public-api-types.test.ts`                           | Root exports and declarations                                                                                                          |
+| `tests/lite/plumbing/accessibility-update-contracts.spec.ts`          | AX parent/leaf transitions, structural mutation isolation, inherited state, semantic override gates                                                                            |
+| `tests/lite/unit/scene-accessibility-membership.test.ts`              | Canonical provenance, refresh pruning, incremental camera membership, retained ancestors, and semantic overrides                                                               |
+| `tests/lite/plumbing/accessibility-integration.spec.ts`               | Native projected focus, camera isolation, GL live overlays, compat actions/keyboard/ordering and cleanup                                                                       |
+| `tests/lite/plumbing/accessibility-example.spec.ts`                   | Runnable example controls                                                                                                                                                      |
+| `tests/lite/plumbing/accessibility-projection.spec.ts`                | Orthographic/CSS/viewport/DPI/floating-origin focus, diff-only marker writes, near-plane fallback, forced colors, live form ownership and restoration                          |
+| `packages/babylon-lite-compat/tests/accessibility.test.ts`            | Tag bridge and exact public import mapping                                                                                                                                     |
+| `packages/babylon-lite-compat/tests/actions.test.ts`                  | Trigger constants, original events, filters, conditions, existing chaining                                                                                                     |
+| `packages/babylon-lite-compat/tests/scene-animations-enabled.test.ts` | Compat scene animation gate                                                                                                                                                    |
+| `tests/lite/build/accessibility-treeshake.test.ts`                    | Unused feature elimination and renderer-neutral dependency isolation                                                                                                           |
+| `tests/lite/build/public-api-types.test.ts`                           | Root exports and declarations                                                                                                                                                  |
 
 Targeted validation uses the existing runners:
 
@@ -486,12 +495,14 @@ Keyboard and Chromium accessibility-tree assertions do not replace manual screen
 | `packages/babylon-lite/src/scene/scene-html-twin.ts`                                             | Combined scene/view enabler and projected marker                                         |
 | `packages/babylon-lite/src/accessibility/native-control.ts`                                      | Live native control factories and listener cleanup                                       |
 | `packages/babylon-lite/src/accessibility/html-overlay.ts`                                        | Live panel/canvas-aligned hosting and restoration                                        |
-| `packages/babylon-lite/src/accessibility/form-ownership.ts`                                       | Shared form-association preflight for borrowed DOM                                      |
-| `packages/babylon-lite/src/scene/scene-lifecycle.ts`                                             | Optional opaque scene-node, animation, and terminal cleanup hooks                       |
+| `packages/babylon-lite/src/accessibility/form-ownership.ts`                                      | Shared form-association preflight for borrowed DOM                                       |
+| `packages/babylon-lite/src/scene/scene-lifecycle.ts`, `scene-dispose-registration.ts`            | Optional feeds and build-isolated composable terminal cleanup registrations              |
 | `packages/babylon-lite/src/scene/scene-core.ts`, `scene-remove.ts`                               | Canonical lifecycle feeds and scene disposal                                             |
 | `packages/babylon-lite/src/animation/scene-animation.ts`, `scene-animation-manager.ts`           | Optional scene gate and explicit manager binding                                         |
 | `packages/babylon-lite/src/audio/unmute-ui.ts`                                                   | Named, focusable audio unlock control                                                    |
 | `packages/babylon-lite/src/index.ts`                                                             | Explicit root value/type exports                                                         |
+| `packages/babylon-lite/vite.config.ts`                                                           | Stable library-entry partition for optional modules                                      |
+| `scripts/lite-optional-build-module.ts`, `lite-error-plugin.ts`                                  | Shared optional-module classification and stable numeric error allocation                |
 | `packages/babylon-lite-compat/src/node/node.ts`                                                  | Tag property/observable and source-change bridge                                         |
 | `packages/babylon-lite-compat/src/accessibility/html-twin.ts`                                    | BJS-shaped facade over canonical wrappers and native DOM                                 |
 | `packages/babylon-lite-compat/src/actions/actions.ts`, `scene/scene.ts`                          | Semantic action support, canvas-scoped keys, animation forwarding                        |
@@ -500,3 +511,4 @@ Keyboard and Chromium accessibility-tree assertions do not replace manual screen
 | `lab/lite/accessibility-test.html`, `lab/lite/src/accessibility-test.ts`                         | Renderer-neutral browser fixture                                                         |
 | `lab/lite/accessibility-integration-test.html`, `lab/lite/src/accessibility-integration-test.ts` | Native/GL/compat browser fixture                                                         |
 | `lab/lite/src/accessibility-fixture-types.ts`                                                    | Browser fixture typing                                                                   |
+| `tests/lite/build/bundle-tooling.test.ts`                                                        | Optional entry and error-allocation ordering contract                                    |

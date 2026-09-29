@@ -19,10 +19,13 @@ and independently driven `AnimationManager` instances keep their own clocks.
 
 `bindAnimationManagerToScene(scene, manager)` explicitly attaches a stopped manager
 to the scene clock and this gate. Its disposer detaches without changing tasks;
-scene disposal detaches automatically. Starting an autonomous clock while bound
-throws. The gate is stored outside scenes in a lazy weak registry. The generic
-scene lifecycle override is installed only by the setter, allowing unused gate
-code and its core call site to disappear from production bundles.
+scene disposal detaches automatically, including when an earlier cleanup callback
+throws. The original cleanup error is rethrown. Starting an autonomous clock while
+bound throws. The binding module installs its terminal disposal hook on the first
+binding and unregisters the hook after the last detach. The gate is stored outside
+scenes in a lazy weak registry.
+`sceneAnimationOverride` is installed only by the setter, allowing unused gate code
+and its core call site to disappear from production bundles.
 
 ### Constants
 

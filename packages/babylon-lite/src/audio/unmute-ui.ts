@@ -13,6 +13,42 @@
 
 import { type AudioEngine, unlockAudioEngineAsync } from "./audio-engine.js";
 
+const UNMUTE_BUTTON_ID = "babylonUnmuteButton";
+let idOwners: WeakMap<Document, HTMLButtonElement> | undefined;
+let documentButtons: WeakMap<Document, Set<HTMLButtonElement>> | undefined;
+
+function registerButton(button: HTMLButtonElement): void {
+    const doc = button.ownerDocument;
+    const registered = (documentButtons ??= new WeakMap());
+    let buttons = registered.get(doc);
+    if (!buttons) {
+        buttons = new Set();
+        registered.set(doc, buttons);
+    }
+    buttons.add(button);
+    if (!idOwners?.has(doc) && !doc.getElementById?.(UNMUTE_BUTTON_ID)) {
+        button.id = UNMUTE_BUTTON_ID;
+        (idOwners ??= new WeakMap()).set(doc, button);
+    }
+}
+
+function unregisterButton(button: HTMLButtonElement): void {
+    const doc = button.ownerDocument;
+    const buttons = documentButtons?.get(doc);
+    buttons?.delete(button);
+    if (idOwners?.get(doc) === button) {
+        idOwners.delete(doc);
+        const successor = buttons?.values().next().value;
+        if (successor && !doc.getElementById?.(UNMUTE_BUTTON_ID)) {
+            successor.id = UNMUTE_BUTTON_ID;
+            idOwners.set(doc, successor);
+        }
+    }
+    if (buttons?.size === 0) {
+        documentButtons?.delete(doc);
+    }
+}
+
 /** Options for {@link createUnmuteUI}. */
 export interface UnmuteUIOptions {
     /** Parent element for the button. Defaults to `document.body`. */
@@ -30,7 +66,7 @@ export interface UnmuteUI {
     /** @internal */ _style: HTMLStyleElement | null;
     /** @internal */ _enabled: boolean;
     /** @internal */ _unsub: (() => void) | null;
-    /** @internal */ _removeClick: () => void;
+    /** @internal */ _removeClick: (() => void) | null;
     /** @internal */ _dispose(): void;
 }
 
@@ -71,6 +107,7 @@ export function createUnmuteUI(engine: AudioEngine, options: UnmuteUIOptions = {
     button.type = "button";
     button.ariaLabel = options.label?.trim() || "Enable audio";
     button.className = "babylonUnmute";
+    registerButton(button);
     let pending = false;
     const complete = (): void => {
         pending = false;
@@ -152,8 +189,13 @@ export function setUnmuteUIEnabled(ui: UnmuteUI, enabled: boolean): void {
  * @param ui - The UI handle.
  */
 export function disposeUnmuteUI(ui: UnmuteUI): void {
-    ui._removeClick();
-    ui._button?.remove();
+    const button = ui._button;
+    ui._removeClick?.();
+    ui._removeClick = null;
+    button?.remove();
+    if (button) {
+        unregisterButton(button);
+    }
     ui._button = null;
     ui._style?.remove();
     ui._style = null;

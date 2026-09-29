@@ -29,6 +29,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import ts from "typescript";
 
+import { isLiteOptionalBuildModule } from "./lite-optional-build-module";
+
 interface Candidate {
     /** Replace [start, end) of the source (the `throw new Error(...)` expression). */
     start: number;
@@ -69,15 +71,10 @@ function walkTsFiles(root: string): string[] {
     return out;
 }
 
-function errorAllocationOrder(root: string, file: string): number {
+export function liteErrorAllocationOrder(root: string, file: string): number {
     const relative = path.relative(root, file).replace(/\\/g, "/");
     // Append new opt-in groups after established groups so nonusers retain their compact error codes.
-    if (
-        relative.startsWith("accessibility/") ||
-        relative === "animation/scene-animation.ts" ||
-        relative === "animation/scene-animation-manager.ts" ||
-        relative === "scene/scene-html-twin.ts"
-    ) {
+    if (isLiteOptionalBuildModule(relative)) {
         return 2;
     }
     return relative.startsWith("compute/") || relative.startsWith("resource/compute-storage-") ? 1 : 0;
@@ -164,7 +161,7 @@ export function liteErrorPlugin(): Plugin {
 
         buildStart() {
             plans.clear();
-            const files = walkTsFiles(srcRoot).sort((a, b) => errorAllocationOrder(srcRoot, a) - errorAllocationOrder(srcRoot, b) || a.localeCompare(b));
+            const files = walkTsFiles(srcRoot).sort((a, b) => liteErrorAllocationOrder(srcRoot, a) - liteErrorAllocationOrder(srcRoot, b) || a.localeCompare(b));
             const tableEntries: string[] = [];
             let nextCode = 0;
 

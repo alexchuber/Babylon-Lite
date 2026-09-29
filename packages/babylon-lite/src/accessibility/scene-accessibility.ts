@@ -12,9 +12,16 @@ import {
 } from "./accessibility-tree.js";
 import type { AccessibilityNode, AccessibilityTag, AccessibilityTree } from "./accessibility-tree.js";
 import { observeProperty } from "./observe-property.js";
-import { sceneNodeChanged, setSceneNodeChanged, sceneDisposeOverride, setSceneDisposeOverride } from "../scene/scene-lifecycle.js";
+import { sceneNodeChanged, setSceneNodeChanged } from "../scene/scene-lifecycle.js";
+import { registerSceneDisposeOverride } from "../scene/scene-dispose-registration.js";
 
 type SceneSource = SceneNode | Camera;
+type MembershipKind = "automatic" | "explicit" | "camera";
+
+interface SceneMembership {
+    root: SceneSource | null;
+    kind: MembershipKind;
+}
 
 /** Optional explicit roots for logical/empty nodes that the rendering scene does not retain. */
 export interface SceneAccessibilityOptions {
@@ -24,7 +31,7 @@ export interface SceneAccessibilityOptions {
 interface NodeBinding {
     node: AccessibilityNode;
     unsubscribe: (() => void)[];
-    memberships: Set<SceneSource | null>;
+    memberships: Set<SceneMembership>;
 }
 
 /** Opt-in adapter. The scene owns its binding, never the component. */
@@ -47,9 +54,17 @@ export interface SceneAccessibility {
     /** @internal */
     _removed: WeakSet<SceneSource>;
     /** @internal */
-    _roots: Set<SceneSource>;
-    /** @internal Null identifies the active camera's independent membership source. */
-    _memberships: Map<SceneSource | null, Set<SceneSource>>;
+    _explicitRoots: Set<SceneSource>;
+    /** @internal Canonical hierarchy roots reported by addToScene or rebuilt from scene collections. */
+    _automaticRoots: Set<SceneSource>;
+    /** @internal Stable provenance tokens keep explicit, automatic, and camera membership independent. */
+    _membershipTokens: {
+        explicit: Map<SceneSource, SceneMembership>;
+        automatic: Map<SceneSource, SceneMembership>;
+        camera: SceneMembership;
+    };
+    /** @internal */
+    _memberships: Map<SceneMembership, Set<SceneSource>>;
 }
 
 interface SceneObservers {
@@ -59,7 +74,7 @@ interface SceneObservers {
 let sceneObservers: WeakMap<SceneContext, SceneObservers> | undefined;
 let activeAdapters = 0;
 let previousNodeChanged: typeof sceneNodeChanged = null;
-let previousDispose: typeof sceneDisposeOverride = null;
+let unregisterDispose: (() => void) | undefined;
 let tags: WeakMap<object, AccessibilityTag> | undefined;
 let tagObservers: WeakMap<object, Set<() => void>> | undefined;
 let tagValidators: WeakMap<object, Set<(tag: AccessibilityTag | null) => void>> | undefined;
@@ -74,7 +89,6 @@ function parentOf(source: SceneSource): unknown {
 
 function disposeOwned(scene: SceneContext, cleanup: () => void): void {
     const errors: unknown[] = [];
-    const previous = previousDispose;
     for (const adapter of [...(sceneObservers?.get(scene)?.adapters ?? [])]) {
         try {
             disposeSceneAccessibility(adapter);
@@ -83,11 +97,7 @@ function disposeOwned(scene: SceneContext, cleanup: () => void): void {
         }
     }
     try {
-        if (previous) {
-            previous(scene, cleanup);
-        } else {
-            cleanup();
-        }
+        cleanup();
     } catch (error) {
         errors.push(error);
     }
@@ -96,23 +106,54 @@ function disposeOwned(scene: SceneContext, cleanup: () => void): void {
     }
 }
 
+function membership(adapter: SceneAccessibility, kind: "automatic" | "explicit", root: SceneSource): SceneMembership {
+    const memberships = adapter._membershipTokens[kind];
+    let token = memberships.get(root);
+    if (!token) {
+        token = { root, kind };
+        memberships.set(root, token);
+    }
+    return token;
+}
+
+function automaticMembership(adapter: SceneAccessibility, source: SceneSource): SceneMembership {
+    const existing = adapter._bindings.get(source);
+    for (const sourceMembership of existing?.memberships ?? []) {
+        if (sourceMembership.kind === "automatic") {
+            return sourceMembership;
+        }
+    }
+    const parent = parentOf(source);
+    if (isNode(parent)) {
+        for (const sourceMembership of adapter._bindings.get(parent)?.memberships ?? []) {
+            if (sourceMembership.kind === "automatic") {
+                return sourceMembership;
+            }
+        }
+    }
+    adapter._automaticRoots.add(source);
+    return membership(adapter, "automatic", source);
+}
+
 function nodeChanged(scene: SceneContext, node: unknown, added: boolean): void {
     previousNodeChanged?.(scene, node, added);
     for (const target of sceneObservers?.get(scene)?.adapters ?? []) {
         if (isNode(node)) {
             if (added) {
-                target._removed.delete(node);
-                target._roots.add(node);
                 batchAccessibilityUpdates(target.tree, () => {
-                    bind(target, node, node);
+                    bind(target, node, automaticMembership(target, node), true, true);
                     schedule(target, node);
                 });
             } else {
                 batchAccessibilityUpdates(target.tree, () => {
-                    target._removed.add(node);
-                    target._roots.delete(node);
-                    releaseMembership(target, node);
-                    unbind(target, node);
+                    if (target._automaticRoots.delete(node)) {
+                        const token = target._membershipTokens.automatic.get(node);
+                        if (token) {
+                            releaseMembership(target, token);
+                            target._membershipTokens.automatic.delete(node);
+                        }
+                    }
+                    releaseAutomaticSource(target, node);
                 });
             }
         }
@@ -176,21 +217,24 @@ function schedule(adapter: SceneAccessibility, source: SceneSource): void {
     });
 }
 
-function bind(adapter: SceneAccessibility, source: SceneSource, membership: SceneSource | null, descendants = true): AccessibilityNode | undefined {
+function bind(adapter: SceneAccessibility, source: SceneSource, sourceMembership: SceneMembership, descendants = true, revive = false): AccessibilityNode | undefined {
+    if (revive) {
+        adapter._removed.delete(source);
+    }
     if (disposed(source) || adapter._removed.has(source)) {
         return undefined;
     }
     const existing = adapter._bindings.get(source);
-    if (existing?.memberships.has(membership)) {
+    if (existing?.memberships.has(sourceMembership)) {
         return existing.node;
     }
     const node = existing?.node ?? addAccessibilityNode(adapter.tree, { target: source, ...sourceState(source) });
     const binding: NodeBinding = existing ?? { node, unsubscribe: [], memberships: new Set() };
-    binding.memberships.add(membership);
-    let members = adapter._memberships.get(membership);
+    binding.memberships.add(sourceMembership);
+    let members = adapter._memberships.get(sourceMembership);
     if (!members) {
         members = new Set();
-        adapter._memberships.set(membership, members);
+        adapter._memberships.set(sourceMembership, members);
     }
     members.add(source);
     adapter._bindings.set(source, binding);
@@ -234,28 +278,49 @@ function bind(adapter: SceneAccessibility, source: SceneSource, membership: Scen
     }
     const sourceParent = parentOf(source);
     if (isNode(sourceParent)) {
-        const parent = bind(adapter, sourceParent, membership, false);
+        const parent = bind(adapter, sourceParent, sourceMembership, false, revive);
         if (!adapter._parents.has(source)) {
             updateAccessibilityNode(adapter.tree, node, { parent: parent ?? null });
         }
     }
     if (descendants) {
         for (const child of source.children) {
-            bind(adapter, child, membership);
+            bind(adapter, child, sourceMembership, true, revive);
         }
     }
     return node;
 }
 
-function releaseMembership(adapter: SceneAccessibility, membership: SceneSource | null): void {
-    const members = adapter._memberships.get(membership);
-    adapter._memberships.delete(membership);
+function releaseMembership(adapter: SceneAccessibility, sourceMembership: SceneMembership): void {
+    const members = adapter._memberships.get(sourceMembership);
+    adapter._memberships.delete(sourceMembership);
     for (const source of members ?? []) {
         const binding = adapter._bindings.get(source);
-        binding?.memberships.delete(membership);
+        binding?.memberships.delete(sourceMembership);
         if (binding?.memberships.size === 0) {
             unbind(adapter, source, false);
         }
+    }
+}
+
+function releaseAutomaticSource(adapter: SceneAccessibility, source: SceneSource): void {
+    const binding = adapter._bindings.get(source);
+    if (!binding) {
+        adapter._removed.add(source);
+        return;
+    }
+    for (const sourceMembership of [...binding.memberships]) {
+        if (sourceMembership.kind === "automatic") {
+            binding.memberships.delete(sourceMembership);
+            adapter._memberships.get(sourceMembership)?.delete(source);
+        }
+    }
+    if (binding.memberships.size) {
+        adapter._removed.delete(source);
+        updateSource(adapter, source);
+    } else {
+        adapter._removed.add(source);
+        unbind(adapter, source, false);
     }
 }
 
@@ -286,21 +351,23 @@ function updateCamera(adapter: SceneAccessibility): void {
             updateSource(adapter, source);
         }
         adapter._dirty.clear();
-        const previous = adapter._memberships.get(null);
-        adapter._memberships.delete(null);
+        const cameraMembership = adapter._membershipTokens.camera;
+        const previous = adapter._memberships.get(cameraMembership);
+        adapter._memberships.delete(cameraMembership);
         for (const source of previous ?? []) {
-            adapter._bindings.get(source)?.memberships.delete(null);
+            adapter._bindings.get(source)?.memberships.delete(cameraMembership);
         }
         if (isNode(adapter._scene.camera)) {
-            bind(adapter, adapter._scene.camera, null);
+            bind(adapter, adapter._scene.camera, cameraMembership, true, true);
         }
         for (const source of previous ?? []) {
             const binding = adapter._bindings.get(source);
             // Reparenting can retire an independent root's old ancestor relationship.
-            for (const membership of binding?.memberships ?? []) {
-                if (membership && !isAncestor(adapter, source, membership) && !isAncestor(adapter, membership, source)) {
-                    binding?.memberships.delete(membership);
-                    adapter._memberships.get(membership)?.delete(source);
+            for (const retained of binding?.memberships ?? []) {
+                const root = retained.root;
+                if (root && !isAncestor(adapter, source, root) && !isAncestor(adapter, root, source)) {
+                    binding?.memberships.delete(retained);
+                    adapter._memberships.get(retained)?.delete(source);
                 }
             }
             if (binding?.memberships.size === 0) {
@@ -317,13 +384,14 @@ function unbind(adapter: SceneAccessibility, source: SceneSource, removed = true
     }
     if (removed) {
         adapter._removed.add(source);
-        adapter._roots.delete(source);
+        adapter._explicitRoots.delete(source);
+        adapter._automaticRoots.delete(source);
     }
     adapter._parents.delete(source);
     binding.unsubscribe.forEach((unsubscribe) => unsubscribe());
     adapter._bindings.delete(source);
-    for (const membership of binding.memberships) {
-        adapter._memberships.get(membership)?.delete(source);
+    for (const sourceMembership of binding.memberships) {
+        adapter._memberships.get(sourceMembership)?.delete(source);
     }
     batchAccessibilityUpdates(adapter.tree, () => {
         for (const child of [...binding.node.children]) {
@@ -339,7 +407,7 @@ function unbind(adapter: SceneAccessibility, source: SceneSource, removed = true
     });
 }
 
-/** Refresh after in-place ARIA edits or a batch of raw property writes. No per-frame scan is installed. */
+/** Reconcile one source after an observed property write or immutable tag replacement. */
 function updateSource(adapter: SceneAccessibility, source: SceneSource): void {
     const binding = adapter._bindings.get(source);
     if (!binding) {
@@ -351,8 +419,8 @@ function updateSource(adapter: SceneAccessibility, source: SceneSource): void {
     }
     const sourceParent = adapter._parents.has(source) ? adapter._parents.get(source) : parentOf(source);
     if (isNode(sourceParent)) {
-        for (const membership of binding.memberships) {
-            bind(adapter, sourceParent, membership, false);
+        for (const sourceMembership of binding.memberships) {
+            bind(adapter, sourceParent, sourceMembership, false);
         }
     }
     const parent = isNode(sourceParent) ? adapter._bindings.get(sourceParent)?.node : undefined;
@@ -362,22 +430,53 @@ function updateSource(adapter: SceneAccessibility, source: SceneSource): void {
     });
 }
 
-/** Refresh after direct child-array edits. Canonical mutations update only changed source nodes. */
+function hierarchyRoot(source: SceneSource): SceneSource {
+    const visited = new Set<SceneSource>();
+    let root = source;
+    while (!visited.has(root)) {
+        visited.add(root);
+        const parent = parentOf(root);
+        if (!isNode(parent)) {
+            break;
+        }
+        root = parent;
+    }
+    return root;
+}
+
+/** Refresh after direct scene-array edits. Canonical mutations update only changed source nodes. */
 export function updateSceneAccessibility(adapter: SceneAccessibility): void {
     if (adapter._disposed) {
         throw new Error("Scene accessibility is disposed.");
     }
     batchAccessibilityUpdates(adapter.tree, () => {
+        const canonicalSources = [...adapter._scene.meshes, ...adapter._scene.lights];
+        const canonicalRoots = new Set<SceneSource>();
+        for (const source of canonicalSources) {
+            canonicalRoots.add(hierarchyRoot(source));
+        }
+        adapter._automaticRoots.clear();
+        for (const root of canonicalRoots) {
+            adapter._automaticRoots.add(root);
+        }
+        for (const [root] of adapter._membershipTokens.automatic) {
+            if (!canonicalRoots.has(root)) {
+                adapter._membershipTokens.automatic.delete(root);
+            }
+        }
         adapter._memberships.clear();
         for (const binding of adapter._bindings.values()) {
             binding.memberships.clear();
         }
-        for (const source of [...adapter._scene.meshes, ...adapter._scene.lights, ...adapter._roots]) {
-            adapter._removed.delete(source);
-            bind(adapter, source, source);
+        for (const source of canonicalSources) {
+            const root = hierarchyRoot(source);
+            bind(adapter, source, membership(adapter, "automatic", root), true, true);
+        }
+        for (const root of adapter._explicitRoots) {
+            bind(adapter, root, membership(adapter, "explicit", root), true, true);
         }
         if (isNode(adapter._scene.camera)) {
-            bind(adapter, adapter._scene.camera, null);
+            bind(adapter, adapter._scene.camera, adapter._membershipTokens.camera, true, true);
         }
         for (const [source, binding] of adapter._bindings) {
             if (binding.memberships.size) {
@@ -453,7 +552,13 @@ export function createSceneAccessibility(scene: SceneContext, options: SceneAcce
         _dirty: new Set(),
         _parents: new Map(),
         _removed: new WeakSet(),
-        _roots: new Set(options.roots ?? []),
+        _explicitRoots: new Set(options.roots ?? []),
+        _automaticRoots: new Set(),
+        _membershipTokens: {
+            explicit: new Map(),
+            automatic: new Map(),
+            camera: { root: null, kind: "camera" },
+        },
         _memberships: new Map(),
     };
     const registry = (sceneObservers ??= new WeakMap());
@@ -465,8 +570,7 @@ export function createSceneAccessibility(scene: SceneContext, options: SceneAcce
     if (activeAdapters++ === 0) {
         previousNodeChanged = sceneNodeChanged;
         setSceneNodeChanged(nodeChanged);
-        previousDispose = sceneDisposeOverride;
-        setSceneDisposeOverride(disposeOwned);
+        unregisterDispose = registerSceneDisposeOverride(disposeOwned);
     }
     observers.adapters.add(adapter);
     try {
@@ -490,7 +594,10 @@ export function disposeSceneAccessibility(adapter: SceneAccessibility): void {
         binding.unsubscribe.forEach((unsubscribe) => unsubscribe());
     }
     adapter._bindings.clear();
-    adapter._roots.clear();
+    adapter._explicitRoots.clear();
+    adapter._automaticRoots.clear();
+    adapter._membershipTokens.explicit.clear();
+    adapter._membershipTokens.automatic.clear();
     adapter._dirty.clear();
     adapter._parents.clear();
     adapter._memberships.clear();
@@ -503,8 +610,8 @@ export function disposeSceneAccessibility(adapter: SceneAccessibility): void {
     if (--activeAdapters === 0) {
         setSceneNodeChanged(previousNodeChanged);
         previousNodeChanged = null;
-        setSceneDisposeOverride(previousDispose);
-        previousDispose = null;
+        unregisterDispose?.();
+        unregisterDispose = undefined;
     }
     disposeAccessibilityTree(adapter.tree);
 }

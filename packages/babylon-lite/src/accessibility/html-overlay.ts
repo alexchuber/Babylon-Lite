@@ -24,6 +24,10 @@ export interface HtmlOverlay {
     _cleanup: (() => void)[];
     /** @internal */
     _disposed: boolean;
+    /** @internal */
+    _frame?: number;
+    /** @internal */
+    _bounds?: readonly [left: number, top: number, width: number, height: number];
 }
 
 /** Align the overlay with the canvas's current CSS bounds. Call after application CSS transforms. */
@@ -32,9 +36,48 @@ export function updateHtmlOverlay(overlay: HtmlOverlay): void {
         throw new Error("HTML overlay is disposed.");
     }
     if (overlay._options.mode === "overlay") {
+        const view = overlay.element.ownerDocument.defaultView!;
+        if (overlay._frame !== undefined) {
+            view.cancelAnimationFrame(overlay._frame);
+            overlay._frame = undefined;
+        }
         const rect = overlay._options.canvas.getBoundingClientRect();
-        Object.assign(overlay.element.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+        const bounds = [rect.left, rect.top, rect.width, rect.height] as const;
+        const previous = overlay._bounds;
+        if (!previous || previous[0] !== bounds[0]) {
+            overlay.element.style.left = `${bounds[0]}px`;
+        }
+        if (!previous || previous[1] !== bounds[1]) {
+            overlay.element.style.top = `${bounds[1]}px`;
+        }
+        if (!previous || previous[2] !== bounds[2]) {
+            overlay.element.style.width = `${bounds[2]}px`;
+        }
+        if (!previous || previous[3] !== bounds[3]) {
+            overlay.element.style.height = `${bounds[3]}px`;
+        }
+        overlay._bounds = bounds;
     }
+}
+
+function cancelGeometryUpdate(overlay: HtmlOverlay): void {
+    if (overlay._frame !== undefined) {
+        overlay.element.ownerDocument.defaultView!.cancelAnimationFrame(overlay._frame);
+        overlay._frame = undefined;
+    }
+}
+
+function scheduleGeometryUpdate(overlay: HtmlOverlay): void {
+    if (overlay._disposed || overlay.element.hidden || overlay._frame !== undefined) {
+        return;
+    }
+    const view = overlay.element.ownerDocument.defaultView!;
+    overlay._frame = view.requestAnimationFrame(() => {
+        overlay._frame = undefined;
+        if (!overlay._disposed && !overlay.element.hidden) {
+            updateHtmlOverlay(overlay);
+        }
+    });
 }
 
 /** Hide both the visual panel and its focusable descendants without replacing live controls. */
@@ -44,6 +87,11 @@ export function setHtmlOverlayVisible(overlay: HtmlOverlay, visible: boolean): v
     }
     const hadFocus = overlay.element.contains(overlay.element.ownerDocument.activeElement);
     overlay.element.hidden = !visible;
+    if (visible) {
+        scheduleGeometryUpdate(overlay);
+    } else {
+        cancelGeometryUpdate(overlay);
+    }
     if (!visible && hadFocus) {
         overlay._options.canvas.focus({ preventScroll: true });
     }
@@ -94,7 +142,7 @@ export function createHtmlOverlay(options: HtmlOverlayOptions): HtmlOverlay {
         slot.append(options.element);
         element.append(style, slot);
         parent.append(element);
-        const update = (): void => updateHtmlOverlay(overlay);
+        const update = (): void => scheduleGeometryUpdate(overlay);
         if (options.mode === "overlay") {
             const view = doc.defaultView;
             const observer = new view.ResizeObserver(update);
@@ -107,7 +155,7 @@ export function createHtmlOverlay(options: HtmlOverlayOptions): HtmlOverlay {
             view.addEventListener("resize", update);
             view.addEventListener("scroll", update, true);
         }
-        update();
+        updateHtmlOverlay(overlay);
         if (hadFocus) {
             active.focus({ preventScroll: true });
         }
@@ -124,6 +172,7 @@ export function disposeHtmlOverlay(overlay: HtmlOverlay): void {
         return;
     }
     overlay._disposed = true;
+    cancelGeometryUpdate(overlay);
     const hadFocus = overlay.element.contains(overlay.element.ownerDocument.activeElement);
     for (const cleanup of overlay._cleanup) {
         cleanup();

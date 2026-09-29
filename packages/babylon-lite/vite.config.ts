@@ -7,6 +7,7 @@ import { trimInternalDts } from "../../scripts/vite-trim-internal-dts";
 import { wgslMinifyPlugin } from "../../scripts/wgsl-minify-plugin";
 import { stripManifoldNodeRequire } from "../../scripts/strip-manifold-node-require";
 import { liteErrorPlugin } from "../../scripts/lite-error-plugin";
+import { isLiteOptionalBuildModule } from "../../scripts/lite-optional-build-module";
 
 /**
  * api-extractor's trim pass works around #4260 by dropping top-level imports kept
@@ -482,12 +483,20 @@ function exposeWgslSourceAsString(content: string): string {
  * `manualChunks` (the two are mutually exclusive in Rollup). `*-worker.ts` Web
  * Worker entry modules are excluded; Vite handles them via `?worker` imports.
  */
+export function orderLiteLibEntries(entries: Iterable<readonly [string, string]>): Record<string, string> {
+    const establishedEntries: Record<string, string> = {};
+    const optionalEntries: Record<string, string> = {};
+    for (const [key, file] of entries) {
+        (isLiteOptionalBuildModule(key) ? optionalEntries : establishedEntries)[key] = file;
+    }
+    return { ...establishedEntries, ...optionalEntries };
+}
+
 function enumerateLibEntries(): Record<string, string> {
-    const entries: Record<string, string> = {};
+    const entries: [string, string][] = [];
     // Entry traversal also determines the emitted root barrel's import order.
     // Append new opt-in modules so their dependencies cannot reorder the established
     // graph (and change downstream chunks) in applications that never use them.
-    const extensionEntries: Record<string, string> = {};
     const walk = (dir: string): void => {
         for (const name of readdirSync(dir)) {
             const full = resolve(dir, name);
@@ -502,15 +511,11 @@ function enumerateLibEntries(): Record<string, string> {
                 .slice(SRC_DIR.length + 1)
                 .replace(/\\/g, "/")
                 .replace(/\.ts$/, "");
-            if (key.startsWith("accessibility/") || key === "animation/scene-animation" || key === "animation/scene-animation-manager" || key === "scene/scene-html-twin") {
-                extensionEntries[key] = full;
-            } else {
-                entries[key] = full;
-            }
+            entries.push([key, full]);
         }
     };
     walk(SRC_DIR);
-    return { ...entries, ...extensionEntries };
+    return orderLiteLibEntries(entries);
 }
 
 /**

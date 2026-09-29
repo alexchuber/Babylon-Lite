@@ -1,4 +1,4 @@
-/** Browser controls used instead of a canvas GUI renderer. Labels are visible and accessible. */
+/** Browser controls used instead of a canvas GUI renderer. Button, form, and content labels are visible; image and group labels provide accessible names. */
 export type NativeControlOptions = {
     label: string;
     disabled?: boolean;
@@ -26,6 +26,20 @@ export interface NativeControl {
 
 /** Create a native HTML control. Browser keyboard/editing behavior is not emulated. */
 export function createNativeControl(options: NativeControlOptions): NativeControl {
+    switch (options.kind) {
+        case "button":
+        case "checkbox":
+        case "radio":
+        case "range":
+        case "text":
+        case "select":
+        case "image":
+        case "content":
+        case "group":
+            break;
+        default:
+            throw new TypeError(`Unsupported native control kind: ${String((options as { kind?: unknown }).kind)}.`);
+    }
     if (!options.label.trim()) {
         throw new Error("A native control requires a nonempty label.");
     }

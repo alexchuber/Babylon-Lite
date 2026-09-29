@@ -1,6 +1,6 @@
 import type { SceneContext } from "./scene-core.js";
 
-/** @internal Opaque, replaceable feeds. Unused installers let bundlers erase every call. */
+/** @internal Opaque optional feeds. Unused installers let bundlers erase every call. */
 export let sceneNodeChanged: ((scene: SceneContext, node: unknown, added: boolean) => void) | null = null;
 /** @internal Return true when an installed consumer handles automatic advancement. */
 export let sceneAnimationOverride: ((callbacks: SceneContext["_beforeRender"]) => boolean) | null = null;

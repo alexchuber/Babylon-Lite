@@ -12,6 +12,7 @@ import {
 import type { AccessibilityNode, AccessibilityNodeOptions, AccessibilityTag, AccessibilityTree, HtmlTwin } from "babylon-lite";
 import type { Scene } from "../scene/scene.js";
 import type { IAccessibilityTag, Node } from "../node/node.js";
+import type { AccessibilityNodeMutation } from "../scene/abstract-scene.js";
 import { AbstractMesh, TransformNode } from "../meshes/meshes.js";
 import { Light } from "../lights/lights.js";
 import { ActionManager } from "../actions/actions.js";
@@ -44,10 +45,14 @@ export class HTMLTwinRenderer {
     public readonly tree: AccessibilityTree;
     public readonly view: HtmlTwin;
     private readonly _nodes = new Map<Node, AccessibilityNode>();
+    private readonly _sources = new Map<AccessibilityNode, Node>();
     private readonly _dirty = new Set<Node>();
+    private readonly _dirtySubtrees = new Set<Node>();
+    private readonly _sortParents = new Set<AccessibilityNode | null>();
+    private readonly _orders = new Map<AccessibilityNode, number>();
     private readonly _managers = new Map<Node, { manager: ActionManager; unsubscribe: () => void }>();
     private readonly _previous: Scene["_accessibilityNodeChanged"];
-    private readonly _changed: (node: Node) => void;
+    private readonly _changed: (node: Node, mutation?: AccessibilityNodeMutation) => void;
     private readonly _previousValidation: Scene["_accessibilityTagChanging"];
     private readonly _validateTag: (node: Node, tag: IAccessibilityTag | null) => void;
     private readonly _onDispose: (scene: Scene) => void;
@@ -102,14 +107,16 @@ export class HTMLTwinRenderer {
             }
         };
         _scene._accessibilityTagChanging = this._validateTag;
-        this._changed = (node): void => {
-            this._previous?.(node);
-            for (const source of [node, ...node.getDescendants()]) {
-                const semantic = this._nodes.get(source);
-                if (semantic) {
-                    Object.assign(semantic, this._state(source));
-                }
-                this._dirty.add(source);
+        this._changed = (node, mutation = "local"): void => {
+            this._previous?.(node, mutation);
+            const semantic = this._nodes.get(node);
+            if (semantic) {
+                Object.assign(semantic, this._state(node));
+            }
+            if (mutation === "subtree") {
+                this._dirtySubtrees.add(node);
+            } else {
+                this._dirty.add(node);
             }
             if (!this._pending) {
                 this._pending = true;
@@ -117,11 +124,23 @@ export class HTMLTwinRenderer {
                     this._pending = false;
                     if (!this._disposed) {
                         batchAccessibilityUpdates(this.tree, () => {
+                            const pending = [...this._dirtySubtrees];
+                            const visited = new Set<Node>();
+                            for (let index = 0; index < pending.length; index++) {
+                                const source = pending[index]!;
+                                if (visited.has(source)) {
+                                    continue;
+                                }
+                                visited.add(source);
+                                this._dirty.add(source);
+                                pending.push(...source.getChildren());
+                            }
+                            this._dirtySubtrees.clear();
                             for (const source of this._dirty) {
                                 this._update(source);
                             }
                             this._dirty.clear();
-                            this._sort();
+                            this._sortChanged();
                         });
                     }
                 });
@@ -166,6 +185,7 @@ export class HTMLTwinRenderer {
                 return true;
             };
             this._nodes.set(source, node);
+            this._sources.set(node, source);
             if (source.parent) {
                 this._update(source.parent);
                 updateAccessibilityNode(this.tree, node, { parent: this._nodes.get(source.parent) ?? null });
@@ -197,59 +217,76 @@ export class HTMLTwinRenderer {
         };
     }
 
-    private _sort(): void {
-        const orders = new Map<AccessibilityNode, number>();
-        for (const [source, node] of this._nodes) {
-            orders.set(node, (source._accessibilityTabOrder ?? 0) > 0 ? source._accessibilityTabOrder! : Infinity);
-        }
-        const sort = (siblings: readonly AccessibilityNode[]): void => {
-            const ordered = [...siblings].sort((a, b) => (orders.get(a) ?? Infinity) - (orders.get(b) ?? Infinity));
-            for (let index = 0; index < ordered.length; index++) {
-                const node = ordered[index]!;
-                if (siblings[index] !== node) {
-                    updateAccessibilityNode(this.tree, node, { before: siblings[index] ?? null });
-                }
-                sort(node.children);
+    private _sortParent(parent: AccessibilityNode | null): void {
+        const siblings = parent?.children ?? this.tree.roots;
+        const ordered = [...siblings].sort((a, b) => (this._orders.get(a) ?? Infinity) - (this._orders.get(b) ?? Infinity));
+        for (let index = 0; index < ordered.length; index++) {
+            const node = ordered[index]!;
+            if (siblings[index] !== node) {
+                updateAccessibilityNode(this.tree, node, { before: siblings[index] ?? null });
             }
-        };
-        sort(this.tree.roots);
+        }
+    }
+
+    private _sortChanged(): void {
+        for (const parent of this._sortParents) {
+            this._sortParent(parent);
+        }
+        this._sortParents.clear();
+    }
+
+    private _remove(source: Node): void {
+        this._managers.get(source)?.unsubscribe();
+        this._managers.delete(source);
+        const removed = this._nodes.get(source);
+        if (!removed) {
+            return;
+        }
+        this._sortParents.add(removed.parent);
+        const pending = [removed];
+        for (let index = 0; index < pending.length; index++) {
+            const node = pending[index]!;
+            pending.push(...node.children);
+            const owner = this._sources.get(node);
+            if (owner) {
+                this._managers.get(owner)?.unsubscribe();
+                this._managers.delete(owner);
+                this._nodes.delete(owner);
+            }
+            this._sources.delete(node);
+            this._orders.delete(node);
+        }
+        removeAccessibilityNode(this.tree, removed);
     }
 
     private _update(source: Node): void {
         if (source.isDisposed()) {
-            this._managers.get(source)?.unsubscribe();
-            this._managers.delete(source);
-            const removed = this._nodes.get(source);
-            if (removed) {
-                const forget = (node: AccessibilityNode): void => {
-                    for (const child of node.children) {
-                        forget(child);
-                    }
-                    for (const [owner, semantic] of this._nodes) {
-                        if (semantic === node) {
-                            this._nodes.delete(owner);
-                            break;
-                        }
-                    }
-                };
-                forget(removed);
-                removeAccessibilityNode(this.tree, removed);
-            }
+            this._remove(source);
             return;
         }
         const node = this._ensure(source)!;
+        const oldParent = node.parent;
+        const oldOrder = this._orders.get(node);
+        const order = (source._accessibilityTabOrder ?? 0) > 0 ? source._accessibilityTabOrder! : Infinity;
         const manager = source.actionManager;
         if (this._managers.get(source)?.manager !== manager) {
             this._managers.get(source)?.unsubscribe();
             this._managers.delete(source);
             if (manager) {
-                this._managers.set(source, { manager, unsubscribe: manager._subscribe(() => this._changed(source)) });
+                this._managers.set(source, { manager, unsubscribe: manager._subscribe(() => this._changed(source, "subtree")) });
             }
         }
         updateAccessibilityNode(this.tree, node, {
             ...this._state(source),
             parent: source.parent ? (this._ensure(source.parent) ?? null) : null,
         });
+        this._orders.set(node, order);
+        if (oldParent !== node.parent) {
+            this._sortParents.add(oldParent);
+            this._sortParents.add(node.parent);
+        } else if (oldOrder !== order) {
+            this._sortParents.add(node.parent);
+        }
     }
 
     private _dispatch(source: Node, event: MouseEvent | KeyboardEvent, secondary: boolean): void {
@@ -280,17 +317,31 @@ export class HTMLTwinRenderer {
             throw new Error("HTMLTwinRenderer is disposed.");
         }
         batchAccessibilityUpdates(this.tree, () => {
-            const sources = new Set<Node>([...this._nodes.keys(), ...this._scene.meshes, ...this._scene.cameras, ...this._scene.lights, ...(this._options.roots ?? [])]);
+            const pending = [...this._scene.meshes, ...this._scene.cameras, ...this._scene.lights, ...(this._options.roots ?? [])];
+            const descendants = new Set<Node>();
+            for (let index = 0; index < pending.length; index++) {
+                const source = pending[index]!;
+                if (descendants.has(source) || source.isDisposed()) {
+                    continue;
+                }
+                descendants.add(source);
+                pending.push(...source.getChildren());
+            }
+            const sources = new Set(descendants);
+            for (const source of descendants) {
+                for (let parent = source.parent; parent && !sources.has(parent); parent = parent.parent) {
+                    sources.add(parent);
+                }
+            }
             for (const source of sources) {
-                for (const child of source.getDescendants()) {
-                    sources.add(child);
-                }
-                if (source.parent) {
-                    sources.add(source.parent);
-                }
                 this._update(source);
             }
-            this._sort();
+            for (const source of [...this._nodes.keys()]) {
+                if (!sources.has(source)) {
+                    this._remove(source);
+                }
+            }
+            this._sortChanged();
         });
     }
 
@@ -318,7 +369,11 @@ export class HTMLTwinRenderer {
         this._scene.onDisposeObservable.remove(this._onDispose);
         renderers?.delete(this._scene);
         this._dirty.clear();
+        this._dirtySubtrees.clear();
         this._nodes.clear();
+        this._sources.clear();
+        this._orders.clear();
+        this._sortParents.clear();
         for (const entry of this._managers.values()) {
             entry.unsubscribe();
         }

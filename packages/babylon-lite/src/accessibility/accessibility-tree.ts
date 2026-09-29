@@ -32,9 +32,12 @@ export function _snapshotAccessibilityTag(tag: AccessibilityTag | null | undefin
             throw new Error(`Invalid accessibility attribute: ${key}`);
         }
     }
-    for (const key of Object.keys(tag.eventHandler ?? {})) {
+    for (const [key, handler] of Object.entries(tag.eventHandler ?? {})) {
         if (!["click", "contextmenu", "focus", "blur"].includes(key)) {
             throw new Error(`Unsupported accessibility event: ${key}. Use click, contextmenu, focus, or blur.`);
+        }
+        if (handler != null && typeof handler !== "function") {
+            throw new TypeError(`Accessibility event ${key} must be a function.`);
         }
     }
     for (const [state, aria] of [
@@ -111,6 +114,8 @@ export interface AccessibilityTree {
     _pendingChanges?: AccessibilityChanges;
     /** @internal */
     _changes?: AccessibilityChanges;
+    /** @internal Number of mounted DOM projections. Borrowed controls require one exclusive view. */
+    _domViews?: number;
 }
 
 function changes(tree: AccessibilityTree): AccessibilityChanges {
@@ -200,10 +205,33 @@ function validateElement(tree: AccessibilityTree, element: HTMLElement | undefin
     }
 }
 
+function validateAuthoredState(options: AccessibilityNodeOptions, tag: AccessibilityTag | null): void {
+    for (const [state, aria] of [
+        ["hidden", "aria-hidden"],
+        ["disabled", "aria-disabled"],
+    ] as const) {
+        if (options[state] !== undefined && tag?.aria?.[aria] != null && String(options[state]) !== String(tag.aria[aria])) {
+            throw new Error(`Conflicting accessibility state: ${state} and ${aria}.`);
+        }
+    }
+}
+
+function localUnavailable(
+    node: AccessibilityNode,
+    tag: AccessibilityTag | null,
+    patch: AccessibilityNodeOptions,
+    state: "hidden" | "disabled",
+    aria: "aria-hidden" | "aria-disabled"
+): boolean {
+    const nodeState = patch[state] !== undefined ? patch[state] : node[state];
+    return nodeState === true || tag?.[state] === true || String(tag?.aria?.[aria]) === "true";
+}
+
 /** Register one semantic object or native control. */
 export function addAccessibilityNode(tree: AccessibilityTree, options: AccessibilityNodeOptions): AccessibilityNode {
     requireTree(tree, options.parent ?? undefined);
     const tag = _snapshotAccessibilityTag(options.tag);
+    validateAuthoredState(options, tag);
     if (options.before && (!tree._nodes.has(options.before) || options.before.parent !== (options.parent ?? null))) {
         throw new Error("Accessibility ordering requires a sibling in the same tree.");
     }
@@ -243,6 +271,7 @@ function detach(tree: AccessibilityTree, node: AccessibilityNode): void {
 export function updateAccessibilityNode(tree: AccessibilityTree, node: AccessibilityNode, patch: AccessibilityNodeOptions): void {
     requireTree(tree, node);
     const tag = "tag" in patch ? _snapshotAccessibilityTag(patch.tag) : node.tag;
+    validateAuthoredState(patch, tag);
     if (patch.before && (!tree._nodes.has(patch.before) || patch.before.parent !== (patch.parent === undefined ? node.parent : patch.parent))) {
         throw new Error("Accessibility ordering requires a sibling in the same tree.");
     }
@@ -253,6 +282,9 @@ export function updateAccessibilityNode(tree: AccessibilityTree, node: Accessibi
         validate({ ...node, ...patch, tag }, node);
     }
     const reparented = patch.parent !== undefined && patch.parent !== node.parent;
+    const availabilityChanged =
+        localUnavailable(node, tag, patch, "hidden", "aria-hidden") !== localUnavailable(node, node.tag, {}, "hidden", "aria-hidden") ||
+        localUnavailable(node, tag, patch, "disabled", "aria-disabled") !== localUnavailable(node, node.tag, {}, "disabled", "aria-disabled");
     if (reparented) {
         requireTree(tree, patch.parent ?? undefined);
         for (let parent = patch.parent; parent; parent = parent.parent) {
@@ -265,7 +297,7 @@ export function updateAccessibilityNode(tree: AccessibilityTree, node: Accessibi
         node.parent = patch.parent ?? null;
         (node.parent?._children ?? tree._roots).push(node);
     }
-    if (reparented || patch.disabled !== undefined || tag?.disabled !== node.tag?.disabled || tag?.aria?.["aria-disabled"] !== node.tag?.aria?.["aria-disabled"]) {
+    if (reparented || availabilityChanged) {
         changes(tree).subtrees.add(node);
     }
     if ("tag" in patch) {

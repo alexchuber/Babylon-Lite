@@ -65,6 +65,8 @@ const twin = createSceneHtmlTwin(scene, {
 
 Core scene storage does not retain every empty transform. A late binding cannot discover an unrelated empty root that was never retained.
 
+`updateSceneAccessibility` rebuilds automatic membership from the current scene arrays and keeps explicit `roots`. Use it after direct array edits that bypass `addToScene` or `removeFromScene`.
+
 ## Update descriptions and availability
 
 Replace tags with `setAccessibilityTag`. Lite copies and freezes the tag, its ARIA map, and its handler map. Mutating your original object does not update the twin.
@@ -180,9 +182,11 @@ updateHtmlOverlay(overlay);
 disposeHtmlOverlay(overlay);
 ```
 
-Choose `"panel"` for normal document layout or `"overlay"` for a fixed, screen-aligned host matching the canvas's CSS bounds. Overlay mode tracks resize and scroll. Call `updateHtmlOverlay` after other layout changes, such as application CSS transforms.
+Choose `"panel"` for normal document layout or `"overlay"` for a fixed, screen-aligned host matching the canvas's CSS bounds. Overlay mode coalesces resize and scroll signals into one animation-frame update, pauses automatic geometry work while hidden, and writes only changed bounds. Call `updateHtmlOverlay` for an immediate update after other layout changes, such as application CSS transforms.
 
 Mount outside the canvas and outside inert content. Do not give overlapping elements to separate twins, or share content between an overlay and a twin. HTML texture sources remain inert and are rejected; create separate live controls instead of adopting the texture's source element.
+
+A logical tree can feed multiple twins when it contains generated semantic items. If the tree borrows caller-owned DOM through `element`, mount only one twin because the original element cannot belong to multiple document locations.
 
 Preserve the original form owner when hosting inputs. Move the whole form, choose a host inside that form, or supply an already valid explicit `form` attribute. Twins and overlays reject moves that would silently remove an input from form submission or validation.
 
@@ -225,7 +229,7 @@ const unmute = createUnmuteUI(audioEngine, {
 disposeUnmuteUI(unmute);
 ```
 
-The unmute button has native button semantics and visible focus. Without `onError`, unlock failures reach the owner window's error-reporting path. See the example for a complete audio setup.
+The unmute button has native button semantics and visible focus. The first control in a document uses the established `babylonUnmuteButton` ID; additional controls omit the ID until the owner is disposed. Without `onError`, unlock failures reach the owner window's error-reporting path. See the example for a complete audio setup.
 
 ## Use controls with GL or without a renderer
 

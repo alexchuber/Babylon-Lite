@@ -38,6 +38,12 @@ export function showSceneFocusIndicator(
     const point = { x: 0, y: 0, z: 0 };
     const origin = { x: 0, y: 0, z: 0 };
     const result = { x: 0, y: 0, z: 0, cssX: 0, cssY: 0, clipW: 0, behindCamera: false, clipped: false, offscreen: false };
+    let bounds: readonly [left: number, top: number, width: number, height: number] | undefined;
+    const setHidden = (hidden: boolean): void => {
+        if (marker.hidden !== hidden) {
+            marker.hidden = hidden;
+        }
+    };
     const update = (): void => {
         if (scene._z) {
             marker.remove();
@@ -45,7 +51,7 @@ export function showSceneFocusIndicator(
         }
         const camera = scene.camera;
         const rect = canvas.getBoundingClientRect();
-        marker.hidden = true;
+        let visible = false;
         if (camera && rect.width > 0 && rect.height > 0 && canvas.width > 0 && canvas.height > 0) {
             const viewport = resolveCameraViewport(camera, canvas.width, canvas.height);
             if (viewport.width > 0 && viewport.height > 0) {
@@ -101,11 +107,25 @@ export function showSceneFocusIndicator(
                     top = Math.max(viewportTop, top);
                     right = Math.min(viewportRight, right);
                     bottom = Math.min(viewportBottom, bottom);
-                    Object.assign(marker.style, { left: `${rect.left + left}px`, top: `${rect.top + top}px`, width: `${right - left}px`, height: `${bottom - top}px` });
-                    marker.hidden = false;
+                    const next = [rect.left + left, rect.top + top, right - left, bottom - top] as const;
+                    if (!bounds || bounds[0] !== next[0]) {
+                        marker.style.left = `${next[0]}px`;
+                    }
+                    if (!bounds || bounds[1] !== next[1]) {
+                        marker.style.top = `${next[1]}px`;
+                    }
+                    if (!bounds || bounds[2] !== next[2]) {
+                        marker.style.width = `${next[2]}px`;
+                    }
+                    if (!bounds || bounds[3] !== next[3]) {
+                        marker.style.height = `${next[3]}px`;
+                    }
+                    bounds = next;
+                    visible = true;
                 }
             }
         }
+        setHidden(!visible);
         frame = view.requestAnimationFrame(update);
     };
     update();

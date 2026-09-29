@@ -30,12 +30,28 @@ describe("unmute UI", () => {
         const btn = button(doc);
         expect(btn).toBeDefined();
         expect(btn.className).toBe("babylonUnmute");
-        expect(btn.id).toBe("");
+        expect(btn.id).toBe("babylonUnmuteButton");
         expect(btn.style.display).toBe("block");
         // A <style> was appended to the head.
         expect(doc.head.children.length).toBe(1);
         disposeUnmuteUI(ui);
         disposeAudioEngine(engine);
+    });
+
+    it("keeps the established ID unique when multiple controls share a document", async () => {
+        const firstEngine = await makeEngine();
+        const secondEngine = await makeEngine();
+        const first = createUnmuteUI(firstEngine);
+        const second = createUnmuteUI(secondEngine);
+
+        expect(first._button?.id).toBe("babylonUnmuteButton");
+        expect(second._button?.id).toBe("");
+
+        disposeUnmuteUI(first);
+        expect(second._button?.id).toBe("babylonUnmuteButton");
+        disposeUnmuteUI(second);
+        disposeAudioEngine(firstEngine);
+        disposeAudioEngine(secondEngine);
     });
 
     it("uses a named non-submit button with a visible keyboard focus outline", async () => {
@@ -151,9 +167,11 @@ describe("unmute UI", () => {
         expect(ui._button).toBeNull();
         expect(ui._style).toBeNull();
         expect(ui._unsub).toBeNull();
+        expect(ui._removeClick).toBeNull();
 
         // State changes after dispose do not throw.
         (engine._ctx as unknown as MockAudioContext)._setState("running");
+        disposeUnmuteUI(ui);
         disposeAudioEngine(engine);
     });
 });

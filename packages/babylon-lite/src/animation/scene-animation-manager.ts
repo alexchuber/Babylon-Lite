@@ -1,9 +1,45 @@
 import type { SceneContext } from "../scene/scene-core.js";
+import { registerSceneDisposeOverride } from "../scene/scene-dispose-registration.js";
 import { updateAnimationManager } from "./animation-manager.js";
 import type { AnimationManager } from "./animation-manager.js";
 import { getSceneAnimationsEnabled } from "./scene-animation.js";
 
 let bindings: WeakMap<AnimationManager, { scene: SceneContext; detach: () => void }> | undefined;
+let sceneBindings: WeakMap<SceneContext, Set<() => void>> | undefined;
+let activeBindings = 0;
+let unregisterDispose: (() => void) | undefined;
+
+function disposeBoundManagers(scene: SceneContext, cleanup: () => void): void {
+    const errors: unknown[] = [];
+    try {
+        cleanup();
+    } catch (error) {
+        errors.push(error);
+    }
+    for (const detach of [...(sceneBindings?.get(scene) ?? [])]) {
+        try {
+            detach();
+        } catch (error) {
+            errors.push(error);
+        }
+    }
+    if (errors.length) {
+        throw errors.length === 1 ? errors[0] : new AggregateError(errors, "Scene and animation cleanup failed.");
+    }
+}
+
+function registerSceneBinding(scene: SceneContext, detach: () => void): void {
+    if (activeBindings++ === 0) {
+        unregisterDispose = registerSceneDisposeOverride(disposeBoundManagers);
+    }
+    const registered = (sceneBindings ??= new WeakMap());
+    let callbacks = registered.get(scene);
+    if (!callbacks) {
+        callbacks = new Set();
+        registered.set(scene, callbacks);
+    }
+    callbacks.add(detach);
+}
 
 /** Drive a stopped manager from the scene clock, honoring `animationsEnabled`.
  * The returned disposer detaches it without changing tasks or playback intent.
@@ -43,13 +79,18 @@ export function bindAnimationManagerToScene(scene: SceneContext, manager: Animat
         if (tickIndex !== -1) {
             scene._beforeRender.splice(tickIndex, 1);
         }
-        const disposeIndex = scene._disposables.indexOf(detach);
-        if (disposeIndex !== -1) {
-            scene._disposables.splice(disposeIndex, 1);
+        const callbacks = sceneBindings?.get(scene);
+        callbacks?.delete(detach);
+        if (callbacks?.size === 0) {
+            sceneBindings?.delete(scene);
+        }
+        if (--activeBindings === 0) {
+            unregisterDispose?.();
+            unregisterDispose = undefined;
         }
     };
     (bindings ??= new WeakMap()).set(manager, { scene, detach });
     scene._beforeRender.push(tick);
-    scene._disposables.push(detach);
+    registerSceneBinding(scene, detach);
     return detach;
 }

@@ -93,6 +93,35 @@ test.describe("projected accessibility focus", () => {
         await expect(marker).toHaveAttribute("aria-hidden", "true");
         await expect(marker).toHaveCSS("pointer-events", "none");
     });
+
+    test("static focus markers do not rewrite unchanged visibility or bounds", async ({ page }) => {
+        await page.goto(`${url}?mode=scene`);
+        await expect(page.locator("body")).toHaveAttribute("data-ready", "true");
+        await page.getByRole("button", { name: "Play instrument" }).focus();
+        const marker = page.locator(".lite-accessibility-scene-focus");
+        await expect(marker).toBeVisible();
+        const writes = await marker.evaluate(
+            (element: HTMLElement) =>
+                new Promise<number>((resolve) => {
+                    let writes = 0;
+                    let hidden = element.hidden;
+                    Object.defineProperty(element, "hidden", {
+                        configurable: true,
+                        get: () => hidden,
+                        set: (value: boolean) => {
+                            writes++;
+                            hidden = value;
+                        },
+                    });
+                    requestAnimationFrame(() =>
+                        requestAnimationFrame(() => {
+                            resolve(writes);
+                        })
+                    );
+                })
+        );
+        expect(writes).toBe(0);
+    });
 });
 
 test("live overlay adoption, hiding, submission, dynamic input, and disposal preserve browser ownership", async ({ page }) => {

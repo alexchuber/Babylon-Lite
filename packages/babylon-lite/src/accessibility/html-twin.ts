@@ -117,6 +117,9 @@ function clearFocus(twin: HtmlTwin): void {
 function validateItem(twin: HtmlTwin, options: AccessibilityNodeOptions, node?: AccessibilityNode): void {
     const { element, tag } = options;
     if (element) {
+        if ((twin.tree._domViews ?? 0) > 1) {
+            throw new Error("A borrowed native control requires one exclusive HTML twin.");
+        }
         for (const [owned, owner] of elementOwners ?? []) {
             if (owner === twin && node && twin._items.get(node)?.element === owned && owned === element) {
                 continue;
@@ -551,6 +554,7 @@ export function createHtmlTwin(tree: AccessibilityTree, options: HtmlTwinOptions
         ".lite-accessibility [data-lite-a11y]:focus,.lite-accessibility [data-lite-a11y] :focus{outline:3px solid var(--lite-accessibility-focus-color,Highlight);outline-offset:3px}.lite-accessibility [hidden]{display:none!important}";
     options.parent.append(style, element);
     const twin: HtmlTwin = { element, tree, _options: options, _items: new Map(), _style: style, _unsubscribe: () => {}, _disposed: false };
+    tree._domViews = (tree._domViews ?? 0) + 1;
     const validate = (options: AccessibilityNodeOptions, node?: AccessibilityNode): void => validateItem(twin, options, node);
     const unsubscribe = onAccessibilityTreeChanged(tree, () => reconcile(twin, tree._changes));
     tree._validators.add(validate);
@@ -576,6 +580,7 @@ export function disposeHtmlTwin(twin: HtmlTwin): void {
         return;
     }
     twin._disposed = true;
+    twin.tree._domViews = Math.max(0, (twin.tree._domViews ?? 1) - 1);
     const hadFocus = twin.element.contains(twin.element.ownerDocument.activeElement);
     twin._unsubscribe();
     try {

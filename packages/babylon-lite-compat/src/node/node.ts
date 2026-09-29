@@ -71,7 +71,7 @@ export abstract class Node {
     }
     public set actionManager(manager: ActionManager | null) {
         this._actionManager = manager;
-        this._scene?._accessibilityNodeChanged?.(this);
+        this._scene?._accessibilityNodeChanged?.(this, "subtree");
     }
 
     /** @internal Owning compat scene, when constructed against one. */
@@ -137,7 +137,7 @@ export abstract class Node {
         if (value && !value._children.includes(this)) {
             value._children.push(this);
         }
-        this._syncParentEnabledState();
+        this._syncParentEnabledState(true);
     }
 
     /** @internal Whether this node is an `AbstractMesh` (overridden there) — drives `getChildMeshes`. */
@@ -223,13 +223,13 @@ export abstract class Node {
     }
 
     /** @internal Refresh this subtree after a local enabled or parent change. */
-    protected _syncParentEnabledState(): void {
+    protected _syncParentEnabledState(subtree = false): void {
         this._parentEnabled = this._parent?.isEnabled() ?? true;
         this._onEffectiveEnabledStateChanged(this.isEnabled());
         for (const child of this._children) {
             child._syncParentEnabledState();
         }
-        this._scene?._accessibilityNodeChanged?.(this);
+        this._scene?._accessibilityNodeChanged?.(this, subtree ? "subtree" : "local");
     }
 
     /** @internal Hook for wrappers that must materialize effective enabled state in Lite. */

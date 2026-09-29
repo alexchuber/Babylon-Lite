@@ -92,6 +92,46 @@ for (const focusThrows of [false, true]) {
     });
 }
 
+for (const order of ["accessibility-first", "animation-first"] as const) {
+    test(`F11 terminal cleanup detaches animation and accessibility bindings (${order})`, async ({ page }) => {
+        const result = await page.evaluate(
+            async ({ urls, order }) => {
+                const api: typeof Lite = await import(urls.lite);
+                const scene = api.createSceneContext(api.createNullEngine(), { defaultRenderTask: false });
+                const manager = api.createAnimationManager();
+                let adapter: Lite.SceneAccessibility;
+                if (order === "accessibility-first") {
+                    adapter = api.createSceneAccessibility(scene);
+                    api.bindAnimationManagerToScene(scene, manager);
+                } else {
+                    api.bindAnimationManagerToScene(scene, manager);
+                    adapter = api.createSceneAccessibility(scene);
+                }
+                scene._disposables.push(() => {
+                    throw new Error("Application cleanup failed");
+                });
+                let message = "";
+                try {
+                    api.disposeScene(scene);
+                } catch (error) {
+                    message = String(error);
+                }
+                return {
+                    message,
+                    adapterDisposed: adapter.tree.disposed,
+                    managerDetached: manager._startGuard === undefined && !scene._beforeRender.length,
+                };
+            },
+            { urls, order }
+        );
+        expect(result).toEqual({
+            message: "Error: Application cleanup failed",
+            adapterDisposed: true,
+            managerDetached: true,
+        });
+    });
+}
+
 for (const reverseDisposal of [false, true]) {
     test(`R2 rejects cross-view descendant and ancestor ownership atomically (reverse disposal: ${reverseDisposal})`, async ({ page }) => {
         const result = await page.evaluate(
@@ -390,6 +430,345 @@ test("R7 reconciliation respects an authored blur handler's newer external focus
         return { blurs, outside: document.activeElement === outside };
     }, urls);
     expect(result).toEqual({ blurs: 1, outside: true });
+});
+
+for (const hiddenSource of ["node", "tag", "aria"] as const) {
+    test(`F01 focused descendants recover when ${hiddenSource} hides an ancestor`, async ({ page }) => {
+        const result = await page.evaluate(
+            async ({ urls, hiddenSource }) => {
+                const api: typeof Lite = await import(urls.lite);
+                const tree = api.createAccessibilityTree();
+                const parent = api.addAccessibilityNode(tree, { tag: { name: "Group", role: "group" } });
+                const focused = api.addAccessibilityNode(tree, { parent, tag: { name: "Focused", eventHandler: { click: () => {} } } });
+                const fallback = api.addAccessibilityNode(tree, { tag: { name: "Fallback", eventHandler: { click: () => {} } } });
+                const twin = api.createHtmlTwin(tree, { parent: document.body });
+                api.focusHtmlTwinNode(twin, focused);
+                if (hiddenSource === "node") {
+                    api.updateAccessibilityNode(tree, parent, { hidden: true });
+                } else if (hiddenSource === "tag") {
+                    api.updateAccessibilityNode(tree, parent, { tag: { ...parent.tag, hidden: true } });
+                } else {
+                    api.updateAccessibilityNode(tree, parent, { tag: { ...parent.tag, aria: { "aria-hidden": true } } });
+                }
+                return {
+                    fallbackFocused: document.activeElement === api.getHtmlTwinElement(twin, fallback),
+                    focusedHidden: api.getHtmlTwinElement(twin, focused)?.closest("[hidden]") !== null,
+                };
+            },
+            { urls, hiddenSource }
+        );
+        expect(result).toEqual({ fallbackFocused: true, focusedHidden: true });
+    });
+}
+
+test("F05 borrowed DOM additions and replacements reject atomically with multiple mounted views", async ({ page }) => {
+    const result = await page.evaluate(async (urls) => {
+        const api: typeof Lite = await import(urls.lite);
+        const original = document.createElement("div");
+        const borrowed = document.createElement("button");
+        original.append(borrowed);
+        document.body.append(original);
+        const tree = api.createAccessibilityTree();
+        const generated = api.addAccessibilityNode(tree, { tag: { name: "Generated" } });
+        const first = api.createHtmlTwin(tree, { parent: document.body });
+        const second = api.createHtmlTwin(tree, { parent: document.body });
+        let addRejected = false;
+        let replaceRejected = false;
+        try {
+            api.addAccessibilityNode(tree, { element: borrowed });
+        } catch {
+            addRejected = true;
+        }
+        try {
+            api.updateAccessibilityNode(tree, generated, { element: borrowed });
+        } catch {
+            replaceRejected = true;
+        }
+        const result = {
+            addRejected,
+            replaceRejected,
+            roots: tree.roots.length,
+            generatedUnchanged: generated.element === undefined && api.getHtmlTwinElement(first, generated)?.textContent === "Generated",
+            borrowedUnchanged: borrowed.parentElement === original,
+            firstChildren: first.element.querySelectorAll("[data-lite-a11y]").length,
+            secondChildren: second.element.querySelectorAll("[data-lite-a11y]").length,
+        };
+        api.disposeHtmlTwin(first);
+        api.disposeHtmlTwin(second);
+        return result;
+    }, urls);
+    expect(result).toEqual({
+        addRejected: true,
+        replaceRejected: true,
+        roots: 1,
+        generatedUnchanged: true,
+        borrowedUnchanged: true,
+        firstChildren: 1,
+        secondChildren: 1,
+    });
+});
+
+test("F02 compat metadata changes avoid descendant reconciliation and unrelated ordering", async ({ page }) => {
+    const result = await page.evaluate(async (urls) => {
+        const { Scene }: typeof CompatScene = await import(urls.scene);
+        const { NullEngine }: typeof CompatEngine = await import(urls.engine);
+        const { TransformNode }: typeof CompatMeshes = await import(urls.meshes);
+        const { HTMLTwinRenderer }: typeof CompatTwin = await import(urls.twin);
+        const engine = new NullEngine();
+        const canvas = document.createElement("canvas");
+        document.body.append(canvas);
+        engine.getRenderingCanvas = () => canvas;
+        const scene = new Scene(engine);
+        const changed = new TransformNode("Changed root", scene);
+        const unrelated = new TransformNode("Unrelated root", scene);
+        const descendants: InstanceType<typeof TransformNode>[] = [];
+        for (let index = 0; index < 24; index++) {
+            const child = new TransformNode(`Child ${index}`, scene);
+            child.parent = changed;
+            child.accessibilityTag = { description: child.name };
+            descendants.push(child);
+        }
+        changed.accessibilityTag = { description: changed.name, role: "group" };
+        unrelated.accessibilityTag = { description: unrelated.name };
+        const renderer = HTMLTwinRenderer.Render(scene, { roots: [changed, unrelated], parentElement: document.body });
+        let descendantReads = 0;
+        for (const child of descendants) {
+            const tag = child.accessibilityTag;
+            Object.defineProperty(child, "accessibilityTag", {
+                configurable: true,
+                get: () => {
+                    descendantReads++;
+                    return tag;
+                },
+            });
+        }
+        let unrelatedOrderReads = 0;
+        Object.defineProperty(unrelated, "_accessibilityTabOrder", {
+            configurable: true,
+            get: () => {
+                unrelatedOrderReads++;
+                return undefined;
+            },
+        });
+        changed.accessibilityTag = { ...changed.accessibilityTag, description: "Renamed root" };
+        await Promise.resolve();
+        const renamed = renderer.view.element.querySelector('[aria-label="Renamed root"]') !== null;
+        scene.dispose();
+        return { descendantReads, unrelatedOrderReads, renamed };
+    }, urls);
+    expect(result).toEqual({ descendantReads: 0, unrelatedOrderReads: 0, renamed: true });
+});
+
+test("F03/F12 compat refresh prunes unreachable wrappers and visits each direct edge once", async ({ page }) => {
+    const result = await page.evaluate(async (urls) => {
+        const { Scene }: typeof CompatScene = await import(urls.scene);
+        const { NullEngine }: typeof CompatEngine = await import(urls.engine);
+        const { TransformNode }: typeof CompatMeshes = await import(urls.meshes);
+        const { HTMLTwinRenderer }: typeof CompatTwin = await import(urls.twin);
+        const engine = new NullEngine();
+        const canvas = document.createElement("canvas");
+        document.body.append(canvas);
+        engine.getRenderingCanvas = () => canvas;
+        const scene = new Scene(engine);
+        const root = new TransformNode("Root", scene);
+        root.accessibilityTag = { description: root.name, role: "group" };
+        const chain = [root];
+        for (let index = 0; index < 31; index++) {
+            const child = new TransformNode(`Depth ${index}`, scene);
+            child.parent = chain.at(-1)!;
+            child.accessibilityTag = { description: child.name, role: "group" };
+            chain.push(child);
+        }
+        const stale = new TransformNode("Stale mesh", scene);
+        stale.accessibilityTag = { description: stale.name };
+        scene.meshes.push(stale);
+        const renderer = HTMLTwinRenderer.Render(scene, { roots: [root], parentElement: document.body });
+        let visitedEdges = 0;
+        for (const source of chain) {
+            const getDescendants = source.getDescendants.bind(source);
+            source.getDescendants = (direct, predicate) => {
+                const descendants = getDescendants(direct, predicate);
+                visitedEdges += descendants.length;
+                return descendants;
+            };
+        }
+        scene.meshes.splice(scene.meshes.indexOf(stale), 1);
+        renderer.refresh();
+        const result = {
+            visitedEdges,
+            edgeCount: chain.length - 1,
+            stalePresent: renderer.view.element.textContent?.includes("Stale mesh") ?? false,
+            staleFocusAccepted: (() => {
+                try {
+                    return renderer.focus(stale);
+                } catch {
+                    return false;
+                }
+            })(),
+        };
+        scene.dispose();
+        return result;
+    }, urls);
+    expect(result).toEqual({ visitedEdges: result.edgeCount, edgeCount: 31, stalePresent: false, staleFocusAccepted: false });
+});
+
+test("F03 compat refresh retains dependency ancestors without importing unretained siblings", async ({ page }) => {
+    const result = await page.evaluate(async (urls) => {
+        const { Scene }: typeof CompatScene = await import(urls.scene);
+        const { NullEngine }: typeof CompatEngine = await import(urls.engine);
+        const { TransformNode }: typeof CompatMeshes = await import(urls.meshes);
+        const { HTMLTwinRenderer }: typeof CompatTwin = await import(urls.twin);
+        const engine = new NullEngine();
+        const canvas = document.createElement("canvas");
+        document.body.append(canvas);
+        engine.getRenderingCanvas = () => canvas;
+        const scene = new Scene(engine);
+        const parent = new TransformNode("Dependency parent", scene);
+        const canonical = new TransformNode("Canonical child", scene);
+        const sibling = new TransformNode("Unretained sibling", scene);
+        canonical.parent = parent;
+        sibling.parent = parent;
+        canonical.accessibilityTag = { description: canonical.name };
+        sibling.accessibilityTag = { description: sibling.name };
+        scene.meshes.push(canonical);
+
+        const renderer = HTMLTwinRenderer.Render(scene, { parentElement: document.body });
+        const result = {
+            parent: renderer.focus(parent),
+            canonical: renderer.focus(canonical),
+            sibling: (() => {
+                try {
+                    return renderer.focus(sibling);
+                } catch {
+                    return false;
+                }
+            })(),
+        };
+        scene.dispose();
+        return result;
+    }, urls);
+    expect(result).toEqual({ parent: false, canonical: true, sibling: false });
+});
+
+test("F02 recursive compat action changes reconcile descendants", async ({ page }) => {
+    const result = await page.evaluate(async (urls) => {
+        const { Scene }: typeof CompatScene = await import(urls.scene);
+        const { NullEngine }: typeof CompatEngine = await import(urls.engine);
+        const { TransformNode }: typeof CompatMeshes = await import(urls.meshes);
+        const { HTMLTwinRenderer }: typeof CompatTwin = await import(urls.twin);
+        const { ActionManager, ExecuteCodeAction }: typeof CompatActions = await import(urls.actions);
+        const engine = new NullEngine();
+        const canvas = document.createElement("canvas");
+        document.body.append(canvas);
+        engine.getRenderingCanvas = () => canvas;
+        const scene = new Scene(engine);
+        const parent = new TransformNode("Parent", scene);
+        const child = new TransformNode("Child", scene);
+        child.parent = parent;
+        child.accessibilityTag = { description: child.name };
+        const manager = new ActionManager(scene);
+        manager.isRecursive = true;
+        parent.actionManager = manager;
+        const renderer = HTMLTwinRenderer.Render(scene, { roots: [parent], parentElement: document.body });
+        const before = renderer.view.element.querySelectorAll("button").length;
+        manager.registerAction(new ExecuteCodeAction(ActionManager.OnPickTrigger, () => {}));
+        await Promise.resolve();
+        const afterAdd = renderer.view.element.querySelectorAll("button").length;
+        manager.unregisterAction(manager.actions[0]!);
+        await Promise.resolve();
+        const afterRemove = renderer.view.element.querySelectorAll("button").length;
+        scene.dispose();
+        return { before, afterAdd, afterRemove };
+    }, urls);
+    expect(result).toEqual({ before: 0, afterAdd: 2, afterRemove: 0 });
+});
+
+test("F07 automatic overlay geometry coalesces, skips hidden work, diffs writes, and cancels disposal", async ({ page }) => {
+    const result = await page.evaluate(async (urls) => {
+        const api: typeof Lite = await import(urls.lite);
+        const canvas = document.createElement("canvas");
+        const content = document.createElement("button");
+        document.body.append(canvas, content);
+        let left = 10;
+        let reads = 0;
+        canvas.getBoundingClientRect = () => {
+            reads++;
+            return { x: left, y: 20, left, top: 20, right: left + 100, bottom: 70, width: 100, height: 50, toJSON: () => ({}) };
+        };
+        const callbacks = new Map<number, FrameRequestCallback>();
+        const cancelled: number[] = [];
+        let nextFrame = 0;
+        const requestAnimationFrame = window.requestAnimationFrame;
+        const cancelAnimationFrame = window.cancelAnimationFrame;
+        window.requestAnimationFrame = (callback) => {
+            const id = ++nextFrame;
+            callbacks.set(id, callback);
+            return id;
+        };
+        window.cancelAnimationFrame = (id) => {
+            cancelled.push(id);
+            callbacks.delete(id);
+        };
+        try {
+            const overlay = api.createHtmlOverlay({ canvas, element: content, mode: "overlay" });
+            reads = 0;
+            let geometryWrites = 0;
+            for (const property of ["left", "top", "width", "height"] as const) {
+                let value = overlay.element.style[property];
+                Object.defineProperty(overlay.element.style, property, {
+                    configurable: true,
+                    get: () => value,
+                    set: (next: string) => {
+                        geometryWrites++;
+                        value = next;
+                    },
+                });
+            }
+            window.dispatchEvent(new Event("resize"));
+            window.dispatchEvent(new Event("scroll"));
+            window.dispatchEvent(new Event("scroll"));
+            const queued = callbacks.size;
+            const readsBeforeFrame = reads;
+            const firstFrame = [...callbacks][0];
+            if (firstFrame) {
+                callbacks.delete(firstFrame[0]);
+                firstFrame[1](0);
+            }
+            const unchangedWrites = geometryWrites;
+            const coalescedReads = reads;
+
+            api.setHtmlOverlayVisible(overlay, false);
+            window.dispatchEvent(new Event("resize"));
+            const hiddenQueued = callbacks.size;
+            left = 30;
+            api.updateHtmlOverlay(overlay);
+            const explicitLeft = overlay.element.style.left;
+            api.setHtmlOverlayVisible(overlay, true);
+            const pending = [...callbacks.keys()][0];
+            api.disposeHtmlOverlay(overlay);
+            return {
+                queued,
+                readsBeforeFrame,
+                coalescedReads,
+                unchangedWrites,
+                hiddenQueued,
+                explicitLeft,
+                cancelledPending: pending !== undefined && cancelled.includes(pending),
+            };
+        } finally {
+            window.requestAnimationFrame = requestAnimationFrame;
+            window.cancelAnimationFrame = cancelAnimationFrame;
+        }
+    }, urls);
+    expect(result).toEqual({
+        queued: 1,
+        readsBeforeFrame: 0,
+        coalescedReads: 1,
+        unchangedWrites: 0,
+        hiddenQueued: 0,
+        explicitLeft: "30px",
+        cancelledPending: true,
+    });
 });
 
 test("R8 metadata changes touch only dirty items, without rewriting live regions or scanning unrelated content", async ({ page }) => {
