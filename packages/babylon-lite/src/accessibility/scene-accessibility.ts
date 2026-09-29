@@ -259,6 +259,26 @@ function releaseMembership(adapter: SceneAccessibility, membership: SceneSource 
     }
 }
 
+function isAncestor(adapter: SceneAccessibility, ancestor: SceneSource, source: SceneSource): boolean {
+    const pending = [source];
+    const visited = new Set<SceneSource>();
+    while (pending.length) {
+        const current = pending.pop()!;
+        if (current === ancestor) {
+            return true;
+        }
+        if (!visited.has(current)) {
+            visited.add(current);
+            for (const parent of [parentOf(current), adapter._parents.get(current)]) {
+                if (isNode(parent)) {
+                    pending.push(parent);
+                }
+            }
+        }
+    }
+    return false;
+}
+
 function updateCamera(adapter: SceneAccessibility): void {
     batchAccessibilityUpdates(adapter.tree, () => {
         const previous = adapter._memberships.get(null);
@@ -270,7 +290,15 @@ function updateCamera(adapter: SceneAccessibility): void {
             bind(adapter, adapter._scene.camera, null);
         }
         for (const source of previous ?? []) {
-            if (adapter._bindings.get(source)?.memberships.size === 0) {
+            const binding = adapter._bindings.get(source);
+            // Reparenting can retire an independent root's old ancestor relationship.
+            for (const membership of binding?.memberships ?? []) {
+                if (membership && !isAncestor(adapter, source, membership) && !isAncestor(adapter, membership, source)) {
+                    binding?.memberships.delete(membership);
+                    adapter._memberships.get(membership)?.delete(source);
+                }
+            }
+            if (binding?.memberships.size === 0) {
                 unbind(adapter, source, false);
             }
         }
@@ -349,7 +377,10 @@ export function updateSceneAccessibility(adapter: SceneAccessibility): void {
         for (const [source, binding] of adapter._bindings) {
             if (binding.memberships.size) {
                 updateSource(adapter, source);
-            } else {
+            }
+        }
+        for (const [source, binding] of adapter._bindings) {
+            if (!binding.memberships.size) {
                 unbind(adapter, source, false);
             }
         }
@@ -391,12 +422,15 @@ export function setAccessibilityParent(adapter: SceneAccessibility, source: Scen
     }
     const naturalParent = parentOf(source);
     const actualParent = parent === undefined && isNode(naturalParent) ? getAccessibilityNode(adapter, naturalParent) : parentNode;
-    updateAccessibilityNode(adapter.tree, node, { parent: actualParent ?? null });
-    if (parent === undefined) {
-        adapter._parents.delete(source);
-    } else {
-        adapter._parents.set(source, parent);
-    }
+    batchAccessibilityUpdates(adapter.tree, () => {
+        updateAccessibilityNode(adapter.tree, node, { parent: actualParent ?? null });
+        if (parent === undefined) {
+            adapter._parents.delete(source);
+        } else {
+            adapter._parents.set(source, parent);
+        }
+        updateSource(adapter, source);
+    });
 }
 
 /** Bind before scene population to include empty transform nodes automatically, or supply explicit roots. */

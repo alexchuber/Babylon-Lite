@@ -7,6 +7,40 @@ import { setParent } from "../../../packages/babylon-lite/src/scene/set-parent";
 import { createSceneAccessibility, getAccessibilityNode, setAccessibilityParent } from "../../../packages/babylon-lite/src/accessibility/scene-accessibility";
 
 describe("camera membership boundaries", () => {
+    it("retains a cleared camera that is still the explicit semantic parent of an independent node", () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const camera = createFreeCamera({ x: 0, y: 0, z: -5 }, { x: 0, y: 0, z: 0 });
+        const child = createTransformNode("Independent");
+        scene.camera = camera;
+        const adapter = createSceneAccessibility(scene, { roots: [child] });
+        setAccessibilityParent(adapter, child, camera);
+        const parent = getAccessibilityNode(adapter, camera);
+        scene.camera = null;
+        expect(getAccessibilityNode(adapter, camera)).toBe(parent);
+        expect(getAccessibilityNode(adapter, child)?.parent).toBe(parent);
+        expect(child.parent).toBeNull();
+        disposeScene(scene);
+    });
+
+    it("releases a former camera ancestor when its independently retained child has moved away", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const camera = createFreeCamera({ x: 0, y: 0, z: -5 }, { x: 0, y: 0, z: 0 });
+        const child = createTransformNode("Retained");
+        const otherParent = createTransformNode("New parent");
+        setParent(child, camera);
+        scene.camera = camera;
+        const adapter = createSceneAccessibility(scene);
+        addToScene(scene, child);
+        setParent(child, otherParent);
+        await Promise.resolve();
+        const retained = getAccessibilityNode(adapter, child);
+        scene.camera = null;
+        expect(getAccessibilityNode(adapter, camera)).toBeUndefined();
+        expect(getAccessibilityNode(adapter, child)).toBe(retained);
+        expect(retained?.parent).toBe(getAccessibilityNode(adapter, otherParent));
+        disposeScene(scene);
+    });
+
     it("preserves a shared ancestor but releases the replaced camera without traversing unrelated roots", () => {
         const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
         const parent = createTransformNode("Parent");
