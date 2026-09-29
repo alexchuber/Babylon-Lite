@@ -183,6 +183,7 @@ stages:
                 - script: |
                       npx playwright test \
                           tests/lite/plumbing/accessibility.spec.ts \
+                          tests/lite/plumbing/accessibility-corrections.spec.ts \
                           tests/lite/plumbing/accessibility-integration.spec.ts \
                           tests/lite/plumbing/accessibility-projection.spec.ts \
                           tests/lite/plumbing/accessibility-example.spec.ts \

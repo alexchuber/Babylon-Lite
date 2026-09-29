@@ -14,8 +14,74 @@ import {
 } from "../../../packages/babylon-lite/src/accessibility/scene-accessibility";
 import { setParent } from "../../../packages/babylon-lite/src/scene/set-parent";
 import { sceneNodeChanged } from "../../../packages/babylon-lite/src/scene/scene-lifecycle";
+import { createFreeCamera } from "../../../packages/babylon-lite/src/camera/free-camera";
 
 describe("scene accessibility lifecycle", () => {
+    it("R5 replaces and clears camera-derived membership from direct assignments and asset containers", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const first = createFreeCamera({ x: 0, y: 0, z: -5 }, { x: 0, y: 0, z: 0 });
+        const second = createFreeCamera({ x: 0, y: 0, z: -10 }, { x: 0, y: 0, z: 0 });
+        const child = createTransformNode("Camera child");
+        setParent(child, first);
+        scene.camera = first;
+        const adapter = createSceneAccessibility(scene);
+        scene.camera = second;
+        await Promise.resolve();
+        expect(getAccessibilityNode(adapter, first)).toBeUndefined();
+        expect(getAccessibilityNode(adapter, child)).toBeUndefined();
+        expect(getAccessibilityNode(adapter, second)).toBeDefined();
+        scene.camera = null;
+        await Promise.resolve();
+        expect(getAccessibilityNode(adapter, second)).toBeUndefined();
+        addToScene(scene, { entities: [], camera: first });
+        await Promise.resolve();
+        expect(getAccessibilityNode(adapter, first)).toBeDefined();
+        expect(getAccessibilityNode(adapter, child)).toBeDefined();
+        disposeScene(scene);
+    });
+
+    it.each(["root", "added", "ancestor"] as const)("R5 retains an old camera with an independent %s membership source", async (membership) => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const camera = createFreeCamera({ x: 0, y: 0, z: -5 }, { x: 0, y: 0, z: 0 });
+        const child = createTransformNode("Retained child");
+        setParent(child, camera);
+        scene.camera = camera;
+        const adapter = createSceneAccessibility(scene, { roots: membership === "root" ? [camera] : [] });
+        if (membership === "added") {
+            addToScene(scene, camera);
+        } else if (membership === "ancestor") {
+            addToScene(scene, child);
+        }
+        const original = getAccessibilityNode(adapter, camera);
+        scene.camera = null;
+        await Promise.resolve();
+        expect(getAccessibilityNode(adapter, camera)).toBe(original);
+        expect(getAccessibilityNode(adapter, child)).toBeDefined();
+        disposeScene(scene);
+    });
+
+    it("R5 shares camera observation per scene and restores descriptors without disturbing another scene", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const other = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const camera = createFreeCamera({ x: 0, y: 0, z: -5 }, { x: 0, y: 0, z: 0 });
+        scene.camera = other.camera = camera;
+        const descriptor = Object.getOwnPropertyDescriptor(scene, "camera")!;
+        const first = createSceneAccessibility(scene);
+        const second = createSceneAccessibility(scene);
+        const shared = createSceneAccessibility(other);
+        disposeSceneAccessibility(first);
+        expect(Object.getOwnPropertyDescriptor(scene, "camera")?.get).toBeTypeOf("function");
+        scene.camera = null;
+        await Promise.resolve();
+        expect(getAccessibilityNode(second, camera)).toBeUndefined();
+        expect(getAccessibilityNode(shared, camera)).toBeDefined();
+        disposeSceneAccessibility(second);
+        expect(Object.getOwnPropertyDescriptor(scene, "camera")).toEqual({ ...descriptor, value: null });
+        disposeScene(other);
+        expect(Object.getOwnPropertyDescriptor(camera, "parent")?.get).toBeUndefined();
+        disposeScene(scene);
+    });
+
     it("tracks late additions, direct metadata/visibility writes, parent changes, removal, and scene disposal", async () => {
         const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
         const adapter = createSceneAccessibility(scene);
