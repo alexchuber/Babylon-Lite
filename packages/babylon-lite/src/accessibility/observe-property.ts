@@ -1,5 +1,6 @@
 interface PropertyObserver {
     descriptor: PropertyDescriptor | undefined;
+    inheritedAccessor: boolean;
     value: unknown;
     listeners: Set<() => void>;
 }
@@ -29,6 +30,7 @@ export function observeProperty(target: object, key: PropertyKey, listener: () =
         }
         observer = {
             descriptor: own,
+            inheritedAccessor: !own && !!(descriptor?.get || descriptor?.set),
             value: descriptor?.get ? descriptor.get.call(target) : (own?.value ?? (target as Record<PropertyKey, unknown>)[key]),
             listeners: new Set(),
         };
@@ -69,7 +71,7 @@ export function observeProperty(target: object, key: PropertyKey, listener: () =
             Object.defineProperty(target, key, restored);
         } else {
             delete (target as Record<PropertyKey, unknown>)[key];
-            if (current !== undefined) {
+            if (!observer!.inheritedAccessor && current !== undefined) {
                 Object.defineProperty(target, key, { configurable: true, enumerable: true, writable: true, value: current });
             }
         }

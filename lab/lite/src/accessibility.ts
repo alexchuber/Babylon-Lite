@@ -13,6 +13,7 @@ import {
 const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
 const group = createTransformNode("Solar system");
 const mars = createTransformNode("Mars");
+const descriptionOnly = createTransformNode("Source name");
 
 setAccessibilityTag(group, { name: "Planets", role: "group" });
 setAccessibilityTag(mars, {
@@ -25,6 +26,10 @@ setAccessibilityTag(mars, {
         "aria-live": "polite",
     },
 });
+setAccessibilityTag(descriptionOnly, {
+    description: "A description-only object",
+    role: "img",
+});
 setParent(mars, group);
 
 const twin = createSceneHtmlTwin(scene, {
@@ -32,6 +37,7 @@ const twin = createSceneHtmlTwin(scene, {
     label: "Solar system scene",
 });
 addToScene(scene, group);
+addToScene(scene, descriptionOnly);
 
 Object.assign(window, {
     accessibilityFixture: {

@@ -79,7 +79,7 @@ function sourceState(source: SceneSource): Pick<AccessibilityNode, "tag" | "hidd
     const snapshot = authored
         ? Object.freeze({
               ...authored,
-              name: authored.name ?? authored.description ?? source.name,
+              name: authored.name ?? (authored.description === undefined ? source.name : undefined),
               aria: authored.aria ? Object.freeze({ ...authored.aria }) : undefined,
           })
         : null;
@@ -135,6 +135,11 @@ function collectSubtree(source: SceneSource, desired: Set<SceneSource>): void {
 
 function desiredSources(adapter: SceneAccessibility): Set<SceneSource> {
     const desired = new Set<SceneSource>();
+    for (const source of [...adapter._scene.meshes, ...adapter._scene.lights]) {
+        if (isSceneSource(source)) {
+            collectAncestors(source, desired);
+        }
+    }
     for (const source of adapter._automatic) {
         collectAncestors(source, desired);
     }
@@ -152,12 +157,22 @@ function semanticParent(adapter: SceneAccessibility, source: SceneSource, desire
     return parent && desired.has(parent) ? parent : null;
 }
 
-function ensureBinding(adapter: SceneAccessibility, source: SceneSource): SourceBinding {
+function ensureBinding(adapter: SceneAccessibility, source: SceneSource, desired: Set<SceneSource>, creating: Set<SceneSource>): SourceBinding {
     let binding = adapter._bindings.get(source);
     if (!binding) {
-        binding = { node: addAccessibilityNode(adapter.tree, { target: source, ...sourceState(source) }), unsubscribe: [] };
+        if (creating.has(source)) {
+            throw new Error("Accessibility parent would create a cycle.");
+        }
+        creating.add(source);
+        const parent = semanticParent(adapter, source, desired);
+        const parentBinding = parent ? ensureBinding(adapter, parent, desired, creating) : undefined;
+        binding = {
+            node: addAccessibilityNode(adapter.tree, { target: source, parent: parentBinding?.node ?? null, ...sourceState(source) }),
+            unsubscribe: [],
+        };
         adapter._bindings.set(source, binding);
         observeSource(adapter, source, binding);
+        creating.delete(source);
     }
     return binding;
 }
@@ -175,8 +190,14 @@ export function updateSceneAccessibility(adapter: SceneAccessibility): void {
     }
     const desired = desiredSources(adapter);
     batchAccessibilityUpdates(adapter.tree, () => {
+        for (const [source, parent] of adapter._parents) {
+            if (!desired.has(source) || (parent !== null && !desired.has(parent))) {
+                adapter._parents.delete(source);
+            }
+        }
+        const creating = new Set<SceneSource>();
         for (const source of desired) {
-            ensureBinding(adapter, source);
+            ensureBinding(adapter, source, desired, creating);
         }
         for (const source of desired) {
             const binding = adapter._bindings.get(source)!;
@@ -223,6 +244,16 @@ export function getAccessibilityNode(adapter: SceneAccessibility, source: SceneS
     return adapter._bindings.get(source)?.node;
 }
 
+function validateSemanticParent(adapter: SceneAccessibility, source: SceneSource, parent: SceneSource | null): void {
+    const visited = new Set<SceneSource>();
+    for (let current = parent; current; current = adapter._parents.has(current) ? adapter._parents.get(current)! : sourceParent(current)) {
+        if (current === source || visited.has(current)) {
+            throw new Error("Accessibility parent would create a cycle.");
+        }
+        visited.add(current);
+    }
+}
+
 /** Override semantic grouping without changing the render transform. Pass undefined to restore natural parentage. */
 export function setAccessibilityParent(adapter: SceneAccessibility, source: SceneSource, parent: SceneSource | null | undefined): void {
     if (adapter._disposed) {
@@ -231,6 +262,7 @@ export function setAccessibilityParent(adapter: SceneAccessibility, source: Scen
     if (parent === undefined) {
         adapter._parents.delete(source);
     } else {
+        validateSemanticParent(adapter, source, parent);
         adapter._parents.set(source, parent);
     }
     schedule(adapter);
@@ -244,7 +276,7 @@ export function createSceneAccessibility(scene: SceneContext, options: SceneAcce
     const adapter: SceneAccessibility = {
         tree: createAccessibilityTree(),
         _scene: scene,
-        _automatic: new Set([...scene.meshes, ...scene.lights].filter(isSceneSource)),
+        _automatic: new Set(),
         _explicit: new Set(options.roots ?? []),
         _parents: new Map(),
         _bindings: new Map(),
@@ -258,7 +290,9 @@ export function createSceneAccessibility(scene: SceneContext, options: SceneAcce
                 return;
             }
             if (added) {
-                adapter._automatic.add(source);
+                if (!scene.meshes.includes(source as never) && !scene.lights.includes(source as never)) {
+                    adapter._automatic.add(source);
+                }
             } else {
                 adapter._automatic.delete(source);
             }

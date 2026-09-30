@@ -511,7 +511,12 @@ export function disposeScene(scene: SceneContext): void {
         return;
     }
     ctx._z = true;
-    ctx._accessibility?.dispose();
+    let accessibilityFailure: { error: unknown } | undefined;
+    try {
+        ctx._accessibility?.dispose();
+    } catch (error) {
+        accessibilityFailure = { error };
+    }
     const lateCleanup = (_lateCleanup ??= new WeakMap());
     lateCleanup.set(ctx, () => 1);
     unregisterRenderingContext(ctx.surface, ctx);
@@ -557,6 +562,9 @@ export function disposeScene(scene: SceneContext): void {
         ctx.camera = null;
     };
     cleanup();
+    if (accessibilityFailure) {
+        throw accessibilityFailure.error;
+    }
 }
 
 /** @internal Run all deferred builders (called by registerScene's boot step before the first frame). */

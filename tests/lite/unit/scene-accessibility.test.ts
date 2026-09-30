@@ -1,17 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createArcRotateCamera } from "../../../packages/babylon-lite/src/camera/arc-rotate";
 import { createNullEngine } from "../../../packages/babylon-lite/src/engine/null-engine";
 import { createHemisphericLight } from "../../../packages/babylon-lite/src/light/hemispheric";
-import { addToScene, createSceneContext, disposeScene } from "../../../packages/babylon-lite/src/scene/scene-core";
+import type { Mesh } from "../../../packages/babylon-lite/src/mesh/mesh";
+import { addToScene, createSceneContext, disposeScene, onSceneDispose } from "../../../packages/babylon-lite/src/scene/scene-core";
 import { removeFromScene } from "../../../packages/babylon-lite/src/scene/scene-remove";
 import { createTransformNode } from "../../../packages/babylon-lite/src/scene/transform-node";
 import { setParent } from "../../../packages/babylon-lite/src/scene/set-parent";
 import { onAccessibilityTreeChanged } from "../../../packages/babylon-lite/src/accessibility/accessibility-tree";
+import { observeProperty } from "../../../packages/babylon-lite/src/accessibility/observe-property";
 import {
     createSceneAccessibility,
     getAccessibilityNode,
     getAccessibilityTag,
     setAccessibilityParent,
     setAccessibilityTag,
+    updateSceneAccessibility,
 } from "../../../packages/babylon-lite/src/accessibility/scene-accessibility";
 
 describe("scene accessibility", () => {
@@ -89,8 +93,12 @@ describe("scene accessibility", () => {
         await Promise.resolve();
         expect(childNode).toMatchObject({
             hidden: false,
-            tag: { name: "Updated description", description: "Updated description", role: "img" },
+            tag: { description: "Updated description", role: "img" },
         });
+
+        setAccessibilityTag(child, { role: "img" });
+        await Promise.resolve();
+        expect(childNode.tag).toEqual({ name: "Renamed", role: "img", aria: undefined });
 
         removeFromScene(scene, child);
         await Promise.resolve();
@@ -109,6 +117,69 @@ describe("scene accessibility", () => {
         const accessibility = createSceneAccessibility(scene);
 
         expect(getAccessibilityNode(accessibility, light)?.tag?.name).toBe("Ambient light");
+        disposeScene(scene);
+    });
+
+    it("reconciles direct scene-array edits without dropping hook-only or explicit roots", async () => {
+        const engine = createNullEngine();
+        const scene = createSceneContext(engine, { defaultRenderTask: false });
+        const explicit = createTransformNode("Explicit");
+        const hookOnly = createTransformNode("Hook only");
+        const mesh = createTransformNode("Mesh") as unknown as Mesh;
+        const light = createHemisphericLight();
+        const camera = createArcRotateCamera(0, 1, 10, { x: 0, y: 0, z: 0 });
+        const accessibility = createSceneAccessibility(scene, { roots: [explicit] });
+
+        addToScene(scene, hookOnly);
+        await Promise.resolve();
+        expect(getAccessibilityNode(accessibility, explicit)).toBeDefined();
+        expect(getAccessibilityNode(accessibility, hookOnly)).toBeDefined();
+
+        scene.meshes.push(mesh);
+        scene.lights.push(light);
+        scene.camera = camera;
+        updateSceneAccessibility(accessibility);
+        expect(getAccessibilityNode(accessibility, mesh)).toBeDefined();
+        expect(getAccessibilityNode(accessibility, light)).toBeDefined();
+        expect(getAccessibilityNode(accessibility, camera)).toBeDefined();
+
+        scene.meshes.length = 0;
+        scene.lights.length = 0;
+        scene.camera = null;
+        updateSceneAccessibility(accessibility);
+        expect(getAccessibilityNode(accessibility, mesh)).toBeUndefined();
+        expect(getAccessibilityNode(accessibility, light)).toBeUndefined();
+        expect(getAccessibilityNode(accessibility, camera)).toBeUndefined();
+        expect(getAccessibilityNode(accessibility, explicit)).toBeDefined();
+        expect(getAccessibilityNode(accessibility, hookOnly)).toBeDefined();
+        disposeScene(scene);
+    });
+
+    it("creates new hierarchy bindings at their final semantic parent", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const accessibility = createSceneAccessibility(scene);
+        const group = createTransformNode("Group");
+        const children = Array.from({ length: 24 }, (_, index) => {
+            const child = createTransformNode(`Child ${index}`);
+            setParent(child, group);
+            return child;
+        });
+        const roots = accessibility.tree._roots;
+        const splice = roots.splice.bind(roots);
+        let rootDetachCount = 0;
+        roots.splice = ((start: number, deleteCount = roots.length - start, ...items: Array<(typeof roots)[number]>) => {
+            if (deleteCount) {
+                rootDetachCount += deleteCount;
+            }
+            return splice(start, deleteCount, ...items);
+        }) as typeof roots.splice;
+
+        addToScene(scene, group);
+        await Promise.resolve();
+        roots.splice = splice;
+
+        expect(rootDetachCount).toBe(0);
+        expect(getAccessibilityNode(accessibility, group)?.children).toHaveLength(children.length);
         disposeScene(scene);
     });
 
@@ -134,6 +205,94 @@ describe("scene accessibility", () => {
         await Promise.resolve();
         expect(getAccessibilityNode(accessibility, group)).toBeUndefined();
         expect(getAccessibilityNode(accessibility, child)?.parent).toBeNull();
+
+        addToScene(scene, group);
+        await Promise.resolve();
+        expect(getAccessibilityNode(accessibility, child)?.parent).toBeNull();
+
+        setAccessibilityParent(accessibility, child, group);
+        removeFromScene(scene, child);
+        await Promise.resolve();
+        addToScene(scene, child);
+        await Promise.resolve();
+        expect(getAccessibilityNode(accessibility, child)?.parent).toBeNull();
         disposeScene(scene);
+    });
+
+    it("rejects semantic cycles synchronously without changing the last valid tree", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const group = createTransformNode("Group");
+        const child = createTransformNode("Child");
+        const accessibility = createSceneAccessibility(scene);
+        addToScene(scene, group);
+        addToScene(scene, child);
+
+        setAccessibilityParent(accessibility, child, group);
+        await Promise.resolve();
+        expect(() => setAccessibilityParent(accessibility, group, child)).toThrow(/cycle/i);
+        expect(getAccessibilityNode(accessibility, group)?.parent).toBeNull();
+        expect(getAccessibilityNode(accessibility, child)?.parent).toBe(getAccessibilityNode(accessibility, group));
+
+        setAccessibilityTag(child, { name: "Still usable" });
+        await Promise.resolve();
+        expect(getAccessibilityNode(accessibility, child)?.tag?.name).toBe("Still usable");
+        disposeScene(scene);
+    });
+
+    it("completes canonical scene cleanup before surfacing accessibility disposal errors", () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const accessibility = createSceneAccessibility(scene);
+        const cleanup = vi.fn();
+        const failure = new Error("observer failed");
+        onSceneDispose(scene, cleanup);
+        onAccessibilityTreeChanged(accessibility.tree, () => {
+            throw failure;
+        });
+
+        expect(() => disposeScene(scene)).toThrow(failure);
+        expect(cleanup).toHaveBeenCalledOnce();
+        expect(scene._accessibility).toBeUndefined();
+        expect(scene._disposables).toEqual([]);
+        expect(scene.meshes).toEqual([]);
+        expect(scene.lights).toEqual([]);
+    });
+
+    it("restores inherited accessors and retains ordinary data writes after observation", () => {
+        let stored = "initial";
+        const prototype = Object.create(null) as { value?: string };
+        Object.defineProperty(prototype, "value", {
+            configurable: true,
+            get: () => stored,
+            set: (value: string) => {
+                stored = value;
+            },
+        });
+        const accessorTarget = Object.create(prototype) as { value: string };
+        const first = vi.fn();
+        const second = vi.fn();
+        const unsubscribeFirst = observeProperty(accessorTarget, "value", first);
+        const unsubscribeSecond = observeProperty(accessorTarget, "value", second);
+
+        accessorTarget.value = "updated";
+        unsubscribeFirst();
+        expect(Object.hasOwn(accessorTarget, "value")).toBe(true);
+        unsubscribeSecond();
+
+        expect(stored).toBe("updated");
+        expect(first).toHaveBeenCalledOnce();
+        expect(second).toHaveBeenCalledOnce();
+        expect(Object.hasOwn(accessorTarget, "value")).toBe(false);
+        expect(accessorTarget.value).toBe("updated");
+
+        const dataTarget = { value: "before" };
+        const unsubscribeData = observeProperty(dataTarget, "value", vi.fn());
+        dataTarget.value = "after";
+        unsubscribeData();
+        expect(Object.getOwnPropertyDescriptor(dataTarget, "value")).toMatchObject({
+            configurable: true,
+            enumerable: true,
+            writable: true,
+            value: "after",
+        });
     });
 });

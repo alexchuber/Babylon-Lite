@@ -106,6 +106,21 @@ export class HTMLTwinRenderer {
         }
     }
 
+    private _ensureNode(source: Node, desired: Set<Node>, creating: Set<Node>): AccessibilityNode {
+        let node = this._nodes.get(source);
+        if (!node) {
+            if (creating.has(source)) {
+                throw new Error("Accessibility parent would create a cycle.");
+            }
+            creating.add(source);
+            const parent = source.parent && desired.has(source.parent) ? this._ensureNode(source.parent, desired, creating) : undefined;
+            node = addAccessibilityNode(this.tree, { target: source, parent: parent ?? null });
+            this._nodes.set(source, node);
+            creating.delete(source);
+        }
+        return node;
+    }
+
     /** Synchronize the current compatibility scene hierarchy immediately. */
     public refresh(): void {
         if (this._disposed) {
@@ -113,17 +128,16 @@ export class HTMLTwinRenderer {
         }
         const desired = new Set<Node>();
         const traversed = new Set<Node>();
-        for (const source of this._roots ?? [...this._scene.meshes, ...this._scene.cameras, ...this._scene.lights]) {
+        for (const source of [...this._scene.meshes, ...this._scene.cameras, ...this._scene.lights, ...(this._roots ?? [])]) {
             this._collect(source, desired, traversed);
             for (let current = source.parent; current; current = current.parent) {
                 desired.add(current);
             }
         }
         batchAccessibilityUpdates(this.tree, () => {
+            const creating = new Set<Node>();
             for (const source of desired) {
-                if (!this._nodes.has(source)) {
-                    this._nodes.set(source, addAccessibilityNode(this.tree, { target: source }));
-                }
+                this._ensureNode(source, desired, creating);
             }
             for (const source of desired) {
                 const parent = source.parent && desired.has(source.parent) ? this._nodes.get(source.parent)! : null;

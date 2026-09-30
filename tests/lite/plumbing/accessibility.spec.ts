@@ -18,6 +18,10 @@ test.describe("passive accessibility HTML", () => {
         await expect(mars).toHaveAttribute("aria-live", "polite");
         await expect(mars).toContainText("Mars");
         await expect(mars).toContainText("The fourth planet from the Sun");
+        const descriptionOnly = region.locator('[data-lite-accessibility-node][role="img"]', { hasText: "A description-only object" });
+        await expect(descriptionOnly).toHaveAttribute("aria-label", "A description-only object");
+        await expect(descriptionOnly).not.toHaveAttribute("aria-description");
+        await expect(descriptionOnly.locator("[data-lite-accessibility-text]")).toHaveText("A description-only object");
         await expect(region.locator("button, input, select, textarea, a[href], [tabindex]")).toHaveCount(0);
         await expect(mars).toHaveJSProperty("tagName", "DIV");
     });
