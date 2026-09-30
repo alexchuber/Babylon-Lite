@@ -259,10 +259,10 @@ export function setAccessibilityParent(adapter: SceneAccessibility, source: Scen
     if (adapter._disposed) {
         throw new Error("Scene accessibility is disposed.");
     }
+    validateSemanticParent(adapter, source, parent === undefined ? sourceParent(source) : parent);
     if (parent === undefined) {
         adapter._parents.delete(source);
     } else {
-        validateSemanticParent(adapter, source, parent);
         adapter._parents.set(source, parent);
     }
     schedule(adapter);
@@ -290,7 +290,7 @@ export function createSceneAccessibility(scene: SceneContext, options: SceneAcce
                 return;
             }
             if (added) {
-                if (!scene.meshes.includes(source as never) && !scene.lights.includes(source as never)) {
+                if (!(("_gpu" in source && "material" in source) || "lightType" in source)) {
                     adapter._automatic.add(source);
                 }
             } else {

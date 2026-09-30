@@ -155,6 +155,20 @@ describe("scene accessibility", () => {
         disposeScene(scene);
     });
 
+    it("classifies scene additions without scanning retained arrays", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        createSceneAccessibility(scene);
+        const meshIncludes = vi.spyOn(scene.meshes, "includes");
+        const lightIncludes = vi.spyOn(scene.lights, "includes");
+
+        addToScene(scene, createTransformNode("Hook only"));
+        await Promise.resolve();
+
+        expect(meshIncludes).not.toHaveBeenCalled();
+        expect(lightIncludes).not.toHaveBeenCalled();
+        disposeScene(scene);
+    });
+
     it("creates new hierarchy bindings at their final semantic parent", async () => {
         const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
         const accessibility = createSceneAccessibility(scene);
@@ -236,6 +250,27 @@ describe("scene accessibility", () => {
         setAccessibilityTag(child, { name: "Still usable" });
         await Promise.resolve();
         expect(getAccessibilityNode(accessibility, child)?.tag?.name).toBe("Still usable");
+        disposeScene(scene);
+    });
+
+    it("rejects cycles when restoring natural parentage without changing the valid override", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const naturalParent = createTransformNode("Natural parent");
+        const child = createTransformNode("Child");
+        setParent(child, naturalParent);
+        const accessibility = createSceneAccessibility(scene);
+        addToScene(scene, naturalParent);
+
+        setAccessibilityParent(accessibility, child, null);
+        setAccessibilityParent(accessibility, naturalParent, child);
+        await Promise.resolve();
+        expect(() => setAccessibilityParent(accessibility, child, undefined)).toThrow(/cycle/i);
+        expect(getAccessibilityNode(accessibility, child)?.parent).toBeNull();
+        expect(getAccessibilityNode(accessibility, naturalParent)?.parent).toBe(getAccessibilityNode(accessibility, child));
+
+        setAccessibilityTag(naturalParent, { name: "Still usable" });
+        await Promise.resolve();
+        expect(getAccessibilityNode(accessibility, naturalParent)?.tag?.name).toBe("Still usable");
         disposeScene(scene);
     });
 
