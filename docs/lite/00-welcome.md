@@ -29,7 +29,6 @@ Babylon Lite is a ground-up rethink of a 3D engine for the modern web. A few ide
 - **No classes — pure data + functions.** Cameras, lights, meshes, and materials are plain state objects. Behavior lives in standalone, tree-shakable functions like `getViewMatrix(camera)` and `addToScene(scene, entity)`. Nothing carries hidden references, which means trivial serialization, zero circular dependencies, and maximum dead-code elimination.
 - **Obsessively tree-shakable.** Every optional feature is an isolated module, dynamically imported only when a scene actually uses it. **Unused features cost zero bytes.** A simple scene ships a handful of KB; a complex PBR + IBL scene only pays for what it touches.
 - **Modern toolchain.** Built on Vite, with WGSL shader minification in production bundles and strict, modern TypeScript throughout.
-- **Passive accessibility metadata.** Optional scene tags and an HTML twin expose names, descriptions, roles, and ARIA without adding scene interaction. See [Passive scene accessibility](06-accessibility.md).
 
 ### Visually compatible — pixel-perfect with Babylon.js
 
