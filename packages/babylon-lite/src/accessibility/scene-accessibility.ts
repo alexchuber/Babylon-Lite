@@ -7,6 +7,7 @@ import {
     createAccessibilityTree,
     disposeAccessibilityTree,
     removeAccessibilityNode,
+    snapshotAccessibilityTag,
     updateAccessibilityNode,
 } from "./accessibility-tree.js";
 import type { AccessibilityNode, AccessibilityTag, AccessibilityTree } from "./accessibility-tree.js";
@@ -161,6 +162,12 @@ function ensureBinding(adapter: SceneAccessibility, source: SceneSource): Source
     return binding;
 }
 
+function disposeBinding(binding: SourceBinding): void {
+    for (const unsubscribe of binding.unsubscribe) {
+        unsubscribe();
+    }
+}
+
 /** Synchronize the semantic tree immediately. Normal property writes are coalesced to a microtask. */
 export function updateSceneAccessibility(adapter: SceneAccessibility): void {
     if (adapter._disposed) {
@@ -184,9 +191,7 @@ export function updateSceneAccessibility(adapter: SceneAccessibility): void {
             if (desired.has(source)) {
                 continue;
             }
-            for (const unsubscribe of binding.unsubscribe) {
-                unsubscribe();
-            }
+            disposeBinding(binding);
             adapter._bindings.delete(source);
             if (adapter.tree._nodes.has(binding.node)) {
                 removeAccessibilityNode(adapter.tree, binding.node);
@@ -197,10 +202,7 @@ export function updateSceneAccessibility(adapter: SceneAccessibility): void {
 
 /** Replace or remove one object's accessibility metadata. */
 export function setAccessibilityTag(source: object, tag: AccessibilityTag | null): void {
-    const tree = createAccessibilityTree();
-    const probe = addAccessibilityNode(tree, { tag });
-    const snapshot = probe.tag;
-    disposeAccessibilityTree(tree);
+    const snapshot = snapshotAccessibilityTag(tag);
     if (snapshot) {
         (tags ??= new WeakMap()).set(source, snapshot);
     } else {
@@ -282,9 +284,7 @@ export function disposeSceneAccessibility(adapter: SceneAccessibility): void {
     adapter._disposed = true;
     adapter._unobserveCamera();
     for (const binding of adapter._bindings.values()) {
-        for (const unsubscribe of binding.unsubscribe) {
-            unsubscribe();
-        }
+        disposeBinding(binding);
     }
     adapter._bindings.clear();
     adapter._automatic.clear();

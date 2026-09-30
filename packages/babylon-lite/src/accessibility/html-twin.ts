@@ -11,7 +11,6 @@ export interface HtmlTwinOptions {
 interface HtmlTwinItem {
     element: HTMLDivElement;
     text: HTMLSpanElement;
-    children: HTMLDivElement;
 }
 
 /** A mounted, non-interactive semantic region. */
@@ -42,12 +41,10 @@ function itemFor(twin: HtmlTwin, node: AccessibilityNode): HtmlTwinItem {
     const document = twin.element.ownerDocument;
     const element = document.createElement("div");
     const text = document.createElement("span");
-    const children = document.createElement("div");
     element.setAttribute("data-lite-accessibility-node", "");
     text.setAttribute("data-lite-accessibility-text", "");
-    children.setAttribute("data-lite-accessibility-children", "");
-    element.append(text, children);
-    item = { element, text, children };
+    element.append(text);
+    item = { element, text };
     twin._items.set(node, item);
     return item;
 }
@@ -71,12 +68,8 @@ function updateItem(item: HtmlTwinItem, node: AccessibilityNode): void {
     if (description) {
         element.setAttribute("aria-description", description);
     }
-    if (node.hidden || tag?.hidden) {
-        element.hidden = true;
-    } else {
-        element.hidden = false;
-    }
-    if (node.disabled || tag?.disabled) {
+    element.hidden = node.hidden;
+    if (node.disabled) {
         element.setAttribute("aria-disabled", "true");
     }
     for (const [key, value] of Object.entries(tag?.aria ?? {})) {
@@ -85,12 +78,13 @@ function updateItem(item: HtmlTwinItem, node: AccessibilityNode): void {
     text.textContent = [name, description].filter(Boolean).join(". ");
 }
 
-function renderChildren(twin: HtmlTwin, parent: HTMLElement, nodes: readonly AccessibilityNode[]): void {
+function renderChildren(twin: HtmlTwin, parent: HTMLElement, nodes: readonly AccessibilityNode[], active: Set<AccessibilityNode>): void {
     for (const node of nodes) {
+        active.add(node);
         const item = itemFor(twin, node);
         updateItem(item, node);
         parent.append(item.element);
-        renderChildren(twin, item.children, node.children);
+        renderChildren(twin, item.element, node.children, active);
     }
 }
 
@@ -104,20 +98,13 @@ export function updateHtmlTwin(twin: HtmlTwin): void {
         return;
     }
     const active = new Set<AccessibilityNode>();
-    const visit = (nodes: readonly AccessibilityNode[]): void => {
-        for (const node of nodes) {
-            active.add(node);
-            visit(node.children);
-        }
-    };
-    visit(twin.tree.roots);
+    renderChildren(twin, twin.element, twin.tree.roots, active);
     for (const [node, item] of twin._items) {
         if (!active.has(node)) {
             item.element.remove();
             twin._items.delete(node);
         }
     }
-    renderChildren(twin, twin.element, twin.tree.roots);
 }
 
 /** Return the DOM element that represents a logical node. */

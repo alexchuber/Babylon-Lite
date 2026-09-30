@@ -5,9 +5,32 @@ import { addToScene, createSceneContext, disposeScene } from "../../../packages/
 import { removeFromScene } from "../../../packages/babylon-lite/src/scene/scene-remove";
 import { createTransformNode } from "../../../packages/babylon-lite/src/scene/transform-node";
 import { setParent } from "../../../packages/babylon-lite/src/scene/set-parent";
-import { createSceneAccessibility, getAccessibilityNode, setAccessibilityParent, setAccessibilityTag } from "../../../packages/babylon-lite/src/accessibility/scene-accessibility";
+import {
+    createSceneAccessibility,
+    getAccessibilityNode,
+    getAccessibilityTag,
+    setAccessibilityParent,
+    setAccessibilityTag,
+} from "../../../packages/babylon-lite/src/accessibility/scene-accessibility";
 
 describe("scene accessibility", () => {
+    it("publishes immutable tags only after validation", () => {
+        const source = {};
+        const aria = { "aria-live": "polite" };
+        setAccessibilityTag(source, { name: "Mars", aria });
+
+        aria["aria-live"] = "assertive";
+        expect(getAccessibilityTag(source)).toEqual({ name: "Mars", aria: { "aria-live": "polite" } });
+        expect(Object.isFrozen(getAccessibilityTag(source))).toBe(true);
+        expect(Object.isFrozen(getAccessibilityTag(source)?.aria)).toBe(true);
+
+        expect(() => setAccessibilityTag(source, { aria: { label: "Invalid" } as never })).toThrow(/aria/i);
+        expect(getAccessibilityTag(source)?.name).toBe("Mars");
+
+        setAccessibilityTag(source, null);
+        expect(getAccessibilityTag(source)).toBeNull();
+    });
+
     it("tracks passive metadata, hierarchy, visibility, and scene membership", async () => {
         const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
         const accessibility = createSceneAccessibility(scene);

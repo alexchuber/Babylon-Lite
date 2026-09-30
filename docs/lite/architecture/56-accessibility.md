@@ -39,9 +39,9 @@ The root package also exports the lower-level tree and HTML twin functions.
 
 `SceneAccessibility` maps scene sources to stable accessibility nodes. It installs one optional `_accessibility` hook on `SceneContext`. Core scene code calls this hook when objects enter or leave the scene. Scenes that do not enable accessibility retain no accessibility imports or runtime allocations.
 
-The adapter observes `name`, `visible`, `parent`, and disposal state on retained sources. It coalesces direct writes into one microtask update. `setAccessibilityTag` uses a lazy `WeakMap` and notifies only active bindings.
+The adapter observes `name`, `visible`, `parent`, and disposal state on retained sources. It coalesces direct writes into one microtask update. `setAccessibilityTag` validates and freezes metadata before storing it in a lazy `WeakMap`, then notifies only active bindings.
 
-`HtmlTwin` subscribes to a tree and renders nested `div` elements. Each element receives:
+`HtmlTwin` subscribes to a tree and renders one nested `div` per logical node. Each element receives:
 
 - `role` when authored.
 - `aria-label` from `name`, or from `description` when `name` is absent.

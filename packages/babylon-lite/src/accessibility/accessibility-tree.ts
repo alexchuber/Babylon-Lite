@@ -56,7 +56,8 @@ export interface AccessibilityTree {
     _dirty: boolean;
 }
 
-function snapshotTag(tag: AccessibilityTag | null | undefined): AccessibilityTag | null {
+/** @internal Validate and freeze an accessibility tag before publication. */
+export function snapshotAccessibilityTag(tag: AccessibilityTag | null | undefined): AccessibilityTag | null {
     if (!tag) {
         return null;
     }
@@ -170,7 +171,7 @@ export function addAccessibilityNode(tree: AccessibilityTree, options: Accessibi
     requireTree(tree);
     const parent = options.parent ?? null;
     validatePosition(tree, parent, options.before);
-    const tag = snapshotTag(options.tag);
+    const tag = snapshotAccessibilityTag(options.tag);
     validateState(options, tag);
     const children: AccessibilityNode[] = [];
     const node: AccessibilityNode = {
@@ -202,7 +203,7 @@ function detach(tree: AccessibilityTree, node: AccessibilityNode): void {
 /** Apply a partial update while preserving node identity. */
 export function updateAccessibilityNode(tree: AccessibilityTree, node: AccessibilityNode, patch: AccessibilityNodeOptions): void {
     requireTree(tree, node);
-    const tag = "tag" in patch ? snapshotTag(patch.tag) : node.tag;
+    const tag = "tag" in patch ? snapshotAccessibilityTag(patch.tag) : node.tag;
     const authoredHidden = patch.hidden === undefined ? node._authoredHidden : patch.hidden;
     const authoredDisabled = patch.disabled === undefined ? node._authoredDisabled : patch.disabled;
     validateState({ hidden: authoredHidden, disabled: authoredDisabled }, tag);
