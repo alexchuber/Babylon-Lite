@@ -62,7 +62,6 @@ This guide shows how to translate a Babylon.js (BJS) scene to Babylon Lite, side
 | `Matrix.Identity()`                                                 | `createIdentityMat4()`                                                                                            |
 | `mesh.dispose()`                                                    | `removeFromScene(scene, mesh)`                                                                              |
 | `scene.onBeforeRenderObservable.add(fn)`                            | `onBeforeRender(scene, fn)`                                                                                 |
-| `mesh.accessibilityTag = { ... }`                                   | `setAccessibilityTag(mesh, { ... })` + one `createSceneHtmlTwin(scene, options)`                            |
 
 ---
 
@@ -128,26 +127,6 @@ const camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2, 5, { x: 0, y: 0,
 scene.camera = camera;
 attachControl(camera, canvas, scene);
 ```
-
-### 4a. Accessibility is descriptive
-
-Babylon Lite can expose scene names, descriptions, roles, and ARIA through an optional passive HTML twin:
-
-```typescript
-setAccessibilityTag(mesh, {
-    name: "Mars",
-    description: "The fourth planet from the Sun",
-    role: "img",
-    aria: { "aria-roledescription": "planet" },
-});
-
-const twin = createSceneHtmlTwin(scene, {
-    parent: document.body,
-    label: "Solar system scene",
-});
-```
-
-The HTML twin follows scene hierarchy and lifecycle changes. It does not add controls, tab stops, action dispatch, keyboard behavior, pointer behavior, or focus behavior. An interactive ARIA role remains descriptive; the application must implement the matching widget behavior.
 
 #### Projecting a world point to canvas or CSS pixels
 

@@ -16,23 +16,11 @@ import type { WebGPUEngine } from "../engine/engine.js";
 import type { AbstractMesh } from "../meshes/meshes.js";
 import { Vector3 } from "../math/vector.js";
 import { Observable } from "../misc/observable.js";
-import { getAccessibilityTag, setAccessibilityTag } from "babylon-lite";
-import type { AccessibilityTag } from "babylon-lite";
-
-/** Babylon-compatible descriptive accessibility metadata. */
-export interface IAccessibilityTag extends AccessibilityTag {}
 
 let _uniqueIdCounter = 0;
 
 export abstract class Node {
-    private _name = "";
-    public get name(): string {
-        return this._name;
-    }
-    public set name(value: string) {
-        this._name = value;
-        this._scene?._accessibilityNodeChanged?.(this);
-    }
+    public name: string;
     /** String id. Defaults to the name (Babylon.js parity). */
     public id: string;
     /** Process-unique numeric id, assigned at construction. */
@@ -40,19 +28,6 @@ export abstract class Node {
     /** Free-form user data slot (Babylon.js `Node.metadata`). */
     public metadata: unknown = null;
     public readonly onDisposeObservable = new Observable<Node>();
-    private _tagChanged?: Observable<IAccessibilityTag | null>;
-
-    public get accessibilityTag(): IAccessibilityTag | null {
-        return getAccessibilityTag(this);
-    }
-    public set accessibilityTag(tag: IAccessibilityTag | null) {
-        setAccessibilityTag(this, tag);
-        this._tagChanged?.notifyObservers(this.accessibilityTag);
-        this._scene?._accessibilityNodeChanged?.(this);
-    }
-    public get onAccessibilityTagChangedObservable(): Observable<IAccessibilityTag | null> {
-        return (this._tagChanged ??= new Observable());
-    }
 
     /** @internal Owning compat scene, when constructed against one. */
     protected _scene: Scene | undefined;
@@ -117,7 +92,6 @@ export abstract class Node {
             value._children.push(this);
         }
         this._syncParentEnabledState();
-        this._scene?._accessibilityNodeChanged?.(this);
     }
 
     /** @internal Whether this node is an `AbstractMesh` (overridden there) — drives `getChildMeshes`. */
@@ -209,7 +183,6 @@ export abstract class Node {
         for (const child of this._children) {
             child._syncParentEnabledState();
         }
-        this._scene?._accessibilityNodeChanged?.(this);
     }
 
     /** @internal Hook for wrappers that must materialize effective enabled state in Lite. */
@@ -270,7 +243,6 @@ export abstract class Node {
             firstError = error;
         } finally {
             this.onDisposeObservable.clear();
-            this._tagChanged?.clear();
         }
         try {
             this._linkParent(null);

@@ -16,8 +16,6 @@ import type { TransformNode } from "../meshes/meshes.js";
 import type { Material } from "../materials/materials.js";
 
 export abstract class AbstractScene {
-    /** @internal Optional notification consumed by the passive accessibility renderer. */
-    public _accessibilityNodeChanged?: (node: Node) => void;
     /**
      * @internal Canonical compat mesh-wrapper registry, keyed by the Lite node each
      * wrapper carries. Kept in sync with the Lite-core-owned scene list: a wrapper is
@@ -117,7 +115,6 @@ export abstract class AbstractScene {
         if (!this._meshes.includes(mesh)) {
             this._meshes.push(mesh);
         }
-        this._accessibilityNodeChanged?.(mesh);
     }
 
     /** @internal Register a camera so it appears in `scene.cameras`. */
@@ -125,7 +122,6 @@ export abstract class AbstractScene {
         if (!this._cameras.includes(camera)) {
             this._cameras.push(camera);
         }
-        this._accessibilityNodeChanged?.(camera);
     }
 
     /** @internal Register a light so it appears in `scene.lights`. */
@@ -133,7 +129,6 @@ export abstract class AbstractScene {
         if (!this._lights.includes(light)) {
             this._lights.push(light);
         }
-        this._accessibilityNodeChanged?.(light);
     }
 
     /** @internal Register a material so it appears in `scene.materials`. */
@@ -145,7 +140,6 @@ export abstract class AbstractScene {
 
     /** @internal Remove a node from the camera / light / mesh registries on dispose. */
     public _unregisterNode(node: Node): void {
-        this._accessibilityNodeChanged?.(node);
         const ci = this._cameras.indexOf(node as unknown as Camera);
         if (ci !== -1) {
             this._cameras.splice(ci, 1);
