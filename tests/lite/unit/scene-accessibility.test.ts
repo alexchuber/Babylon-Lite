@@ -5,6 +5,7 @@ import { addToScene, createSceneContext, disposeScene } from "../../../packages/
 import { removeFromScene } from "../../../packages/babylon-lite/src/scene/scene-remove";
 import { createTransformNode } from "../../../packages/babylon-lite/src/scene/transform-node";
 import { setParent } from "../../../packages/babylon-lite/src/scene/set-parent";
+import { onAccessibilityTreeChanged } from "../../../packages/babylon-lite/src/accessibility/accessibility-tree";
 import {
     createSceneAccessibility,
     getAccessibilityNode,
@@ -14,21 +15,46 @@ import {
 } from "../../../packages/babylon-lite/src/accessibility/scene-accessibility";
 
 describe("scene accessibility", () => {
-    it("publishes immutable tags only after validation", () => {
-        const source = {};
-        const aria = { "aria-live": "polite" };
-        setAccessibilityTag(source, { name: "Mars", aria });
+    it("publishes immutable tags only after validation", async () => {
+        const scene = createSceneContext(createNullEngine(), { defaultRenderTask: false });
+        const source = createTransformNode("Mars");
+        const aria = { "aria-live": "polite", "aria-hidden": false, "aria-disabled": true };
+        setAccessibilityTag(source, { name: "Mars", hidden: false, disabled: true, aria });
 
         aria["aria-live"] = "assertive";
-        expect(getAccessibilityTag(source)).toEqual({ name: "Mars", aria: { "aria-live": "polite" } });
+        expect(getAccessibilityTag(source)).toEqual({
+            name: "Mars",
+            hidden: false,
+            disabled: true,
+            aria: { "aria-live": "polite", "aria-hidden": false, "aria-disabled": true },
+        });
         expect(Object.isFrozen(getAccessibilityTag(source))).toBe(true);
         expect(Object.isFrozen(getAccessibilityTag(source)?.aria)).toBe(true);
 
+        const accessibility = createSceneAccessibility(scene, { roots: [source] });
+        const snapshot = getAccessibilityTag(source);
+        let notifications = 0;
+        onAccessibilityTreeChanged(accessibility.tree, () => notifications++);
+
         expect(() => setAccessibilityTag(source, { aria: { label: "Invalid" } as never })).toThrow(/aria/i);
-        expect(getAccessibilityTag(source)?.name).toBe("Mars");
+        expect(() => setAccessibilityTag(source, { hidden: true, aria: { "aria-hidden": false } })).toThrow(/conflict/i);
+        expect(() => setAccessibilityTag(source, { disabled: true, aria: { "aria-disabled": false } })).toThrow(/conflict/i);
+        expect(getAccessibilityTag(source)).toBe(snapshot);
+        await Promise.resolve();
+        expect(notifications).toBe(0);
+
+        setAccessibilityTag(source, { hidden: true, disabled: false, aria: { "aria-hidden": true, "aria-disabled": false } });
+        await Promise.resolve();
+        expect(getAccessibilityTag(source)).toEqual({
+            hidden: true,
+            disabled: false,
+            aria: { "aria-hidden": true, "aria-disabled": false },
+        });
+        expect(notifications).toBe(1);
 
         setAccessibilityTag(source, null);
         expect(getAccessibilityTag(source)).toBeNull();
+        disposeScene(scene);
     });
 
     it("tracks passive metadata, hierarchy, visibility, and scene membership", async () => {

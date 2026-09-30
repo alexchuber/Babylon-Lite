@@ -66,10 +66,12 @@ export function snapshotAccessibilityTag(tag: AccessibilityTag | null | undefine
             throw new Error(`Invalid ARIA attribute: ${key}`);
         }
     }
-    return Object.freeze({
+    const snapshot = Object.freeze({
         ...tag,
         aria: tag.aria ? Object.freeze({ ...tag.aria }) : undefined,
     });
+    validateState({}, snapshot);
+    return snapshot;
 }
 
 function stateValue(authored: boolean | undefined, tag: AccessibilityTag | null, state: "hidden" | "disabled"): boolean {
