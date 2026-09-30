@@ -1,4 +1,4 @@
-/** Declarative semantics for a scene object. Roles and ARIA attributes do not add widget behavior. */
+/** Declarative descriptions, roles, and ARIA attributes for a scene object. */
 export interface AccessibilityTag {
     name?: string;
     description?: string;

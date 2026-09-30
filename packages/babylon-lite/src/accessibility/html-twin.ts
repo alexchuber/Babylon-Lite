@@ -1,7 +1,7 @@
 import { onAccessibilityTreeChanged } from "./accessibility-tree.js";
 import type { AccessibilityNode, AccessibilityTree } from "./accessibility-tree.js";
 
-/** Options for a passive browser representation of an accessibility tree. */
+/** Options for a browser representation of an accessibility tree. */
 export interface HtmlTwinOptions {
     parent: HTMLElement;
     /** Accessible name of the generated region. */
@@ -13,7 +13,7 @@ interface HtmlTwinItem {
     text: HTMLSpanElement;
 }
 
-/** A mounted, non-interactive semantic region. */
+/** A mounted HTML representation of an accessibility tree. */
 export interface HtmlTwin {
     readonly element: HTMLDivElement;
     readonly tree: AccessibilityTree;
@@ -112,7 +112,7 @@ export function getHtmlTwinElement(twin: HtmlTwin, node: AccessibilityNode): HTM
     return twin._items.get(node)?.element;
 }
 
-/** Mount a labelled, passive DOM region. */
+/** Mount a labelled DOM region for an accessibility tree. */
 export function createHtmlTwin(tree: AccessibilityTree, options: HtmlTwinOptions): HtmlTwin {
     if (tree.disposed) {
         throw new Error("Accessibility tree is disposed.");

@@ -4,7 +4,7 @@ import { createSceneAccessibility, disposeSceneAccessibility } from "../accessib
 import type { SceneAccessibility, SceneAccessibilityOptions } from "../accessibility/scene-accessibility.js";
 import type { SceneContext } from "./scene-core.js";
 
-/** Options for mounting a passive scene representation. */
+/** Options for mounting a scene's HTML representation. */
 export interface SceneHtmlTwinOptions extends HtmlTwinOptions, SceneAccessibilityOptions {}
 
 /** A scene binding and its owned HTML view. */
@@ -13,7 +13,7 @@ export interface SceneHtmlTwin {
     readonly view: HtmlTwin;
 }
 
-/** Bind a scene and mount its passive HTML representation. */
+/** Bind a scene and mount its HTML representation. */
 export function createSceneHtmlTwin(scene: SceneContext, options: SceneHtmlTwinOptions): SceneHtmlTwin {
     const accessibility = createSceneAccessibility(scene, options);
     try {

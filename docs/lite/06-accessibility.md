@@ -1,6 +1,6 @@
-# Passive scene accessibility
+# Scene accessibility
 
-Babylon Lite can expose scene descriptions, roles, and ARIA attributes through a passive HTML representation. The representation updates with the scene, but it does not add scene interaction.
+Babylon Lite can expose scene descriptions, roles, and ARIA attributes through an HTML representation that stays synchronized with the scene.
 
 ## Describe scene objects
 
@@ -33,7 +33,7 @@ setAccessibilityTag(mesh, {
 
 Replacing the tag replaces the published semantics. Pass `null` to remove the tag.
 
-## Mount one passive scene view
+## Mount a scene view
 
 Create the view before scene population when you need it to retain transform-only nodes:
 
@@ -62,9 +62,7 @@ const twin = createSceneHtmlTwin(scene, {
 });
 ```
 
-The view creates nested `div` elements with readable text, roles, and ARIA attributes. It creates no buttons, form controls, tab stops, action handlers, keyboard handlers, pointer handlers, or focus behavior.
-
-An interactive ARIA role does not implement a widget. For example, `role: "button"` describes the authored semantics, but Babylon Lite does not add button activation or keyboard behavior. The application remains responsible for using roles that match its real behavior.
+The view creates nested `div` elements with readable text, authored roles, and ARIA attributes. Use roles that match the application's behavior.
 
 ## Keep the view current
 

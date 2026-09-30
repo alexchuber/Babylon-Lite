@@ -1405,7 +1405,7 @@ export {
     tickFlowGraph,
 } from "./flow-graph/index.js";
 
-// Accessibility (optional and passive; roles and ARIA do not add widget behavior).
+// Accessibility (optional scene descriptions, roles, and ARIA attributes).
 export {
     createAccessibilityTree,
     addAccessibilityNode,

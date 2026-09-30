@@ -25,7 +25,7 @@ interface SourceBinding {
     unsubscribe: (() => void)[];
 }
 
-/** Passive semantic projection owned by one scene. */
+/** Semantic projection owned by one scene. */
 export interface SceneAccessibility {
     readonly tree: AccessibilityTree;
     /** @internal */
