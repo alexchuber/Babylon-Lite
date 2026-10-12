@@ -1,3 +1,7 @@
+> [!IMPORTANT]
+> Base new changes on the [`prod`](https://github.com/alexchuber/Babylon-Lite/tree/prod) branch for the latest upstream changes.
+> The `prod` branch is automatically synced with upstream every hour.
+
 # Babylon Lite
 
 A WebGPU-exclusive, tree-shakable 3D engine that produces pixel-identical output to Babylon.js — in a fraction of the bundle size.
