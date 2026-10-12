@@ -1,0 +1,103 @@
+name: Sync upstream to prod
+
+# Keep this workflow on the fork's default branch, not on prod.
+# UPSTREAM_SYNC_TOKEN: fine-grained PAT with access to this fork and
+# Contents and Workflows read/write permissions. Renew it before expiry.
+# prod is an exact upstream mirror: fork-only commits there are overwritten.
+# Schedules are best-effort and may need re-enabling after 60 days of inactivity.
+on:
+    schedule:
+        - cron: "17 * * * *"
+    workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+    group: sync-upstream-prod
+    cancel-in-progress: false
+
+jobs:
+    sync:
+        if: contains(fromJSON('["alexchuber/Website","alexchuber/Documentation","alexchuber/Babylon-Lite"]'), github.repository) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        env:
+            GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+            GH_HOST: github.com
+            UPSTREAM_REPOSITORY: BabylonJS/${{ github.event.repository.name }}
+            TARGET_BRANCH: prod
+        steps:
+            - name: Mirror upstream default branch
+              shell: bash
+              run: |
+                  set -euo pipefail
+
+                  fail() {
+                    echo "::error::$1"
+                    exit 1
+                  }
+
+                  # Keep the fork token out of public upstream reads and its organization policies.
+                  upstream_api() {
+                    curl --fail --silent --show-error \
+                      -H "Accept: application/vnd.github+json" \
+                      "https://api.github.com/repos/$UPSTREAM_REPOSITORY$1"
+                  }
+
+                  [[ -n "$GH_TOKEN" ]] || fail "Set the UPSTREAM_SYNC_TOKEN repository Actions secret before running this workflow."
+                  case "$GITHUB_REPOSITORY" in
+                    alexchuber/Website|alexchuber/Documentation|alexchuber/Babylon-Lite) ;;
+                    *) fail "Unexpected target repository." ;;
+                  esac
+                  [[ "$TARGET_BRANCH" == "prod" ]] || fail "Only prod may be updated."
+                  [[ "$UPSTREAM_REPOSITORY" == "BabylonJS/${GITHUB_REPOSITORY#*/}" ]] ||
+                    fail "Unexpected upstream repository."
+
+                  fork_metadata=$(gh api "repos/$GITHUB_REPOSITORY")
+                  default_branch=$(jq -er '.default_branch | select(type == "string" and length > 0)' <<< "$fork_metadata")
+                  [[ "$GITHUB_REF" == "refs/heads/$default_branch" && "$TARGET_BRANCH" != "$default_branch" ]] ||
+                    fail "Run from the fork's default branch; never mirror over the default branch."
+                  if ! jq -e --arg upstream "$UPSTREAM_REPOSITORY" '.fork == true and .parent.full_name == $upstream' <<< "$fork_metadata" > /dev/null; then
+                    fail "The target repository is not the expected upstream fork."
+                  fi
+
+                  upstream_branch=$(upstream_api "" | jq -er '.default_branch | select(type == "string" and length > 0)')
+                  encoded_branch=$(jq -rn --arg branch "$upstream_branch" '$branch | @uri')
+                  upstream_sha=$(upstream_api "/branches/$encoded_branch" | jq -er '.commit.sha')
+                  [[ "$upstream_sha" =~ ^[0-9a-f]{40}$ ]] || fail "Upstream did not return a valid commit SHA."
+                  gh api "repos/$GITHUB_REPOSITORY/git/commits/$upstream_sha" > /dev/null
+
+                  target_ref="refs/heads/$TARGET_BRANCH"
+                  matching_refs=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/$TARGET_BRANCH")
+                  previous_sha=$(jq -r --arg ref "$target_ref" '
+                    map(select(.ref == $ref)) |
+                    if length == 0 then ""
+                    elif length == 1 then .[0].object.sha
+                    else error("Multiple exact target references returned")
+                    end
+                  ' <<< "$matching_refs")
+                  [[ -z "$previous_sha" || "$previous_sha" =~ ^[0-9a-f]{40}$ ]] ||
+                    fail "The target reference did not return a valid commit SHA."
+
+                  if [[ -z "$previous_sha" ]]; then
+                    gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                      -f ref="$target_ref" -f sha="$upstream_sha" > /dev/null
+                    status="Created"
+                  elif [[ "$previous_sha" == "$upstream_sha" ]]; then
+                    status="Already current"
+                  else
+                    gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/$TARGET_BRANCH" \
+                      -f sha="$upstream_sha" -F force=true > /dev/null
+                    status="Updated"
+                  fi
+
+                  actual_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$TARGET_BRANCH" --jq '.object.sha')
+                  [[ "$actual_sha" == "$upstream_sha" ]] || fail "prod does not match the captured upstream commit after syncing."
+
+                  {
+                    printf '## Upstream mirror: %s\n\n' "$status"
+                    printf -- '- Source: `%s:%s`\n' "$UPSTREAM_REPOSITORY" "$upstream_branch"
+                    printf -- '- Target: `%s:%s`\n' "$GITHUB_REPOSITORY" "$TARGET_BRANCH"
+                    printf -- '- Previous commit: `%s`\n' "${previous_sha:-not yet created}"
+                    printf -- '- Upstream commit: `%s`\n' "$upstream_sha"
+                  } >> "$GITHUB_STEP_SUMMARY"
