@@ -68,30 +68,30 @@ The index starts with the common scene, camera, loading, and material workflows,
 | [49-error-handling.md](49-error-handling.md)                       | Error Handling           | Coded errors by default; `enableErrorDecoding` (always-on) vs `decodeError` (on-the-fly, e.g. telemetry)  |
 | [50-device-lost-recovery.md](50-device-lost-recovery.md)           | Device Lost Recovery     | Opt-in Scene, SpriteRenderer, and TextRenderer recovery after WebGPU device loss                          |
 | [51-flow-graph.md](51-flow-graph.md)                               | Flow Graph               | Pure-state visual scripting, stable glTF `KHR_interactivity`, and editor JSON compatibility               |
-| [42-node-particle.md](42-node-particle.md)                         | Node Particles           | Node Particle Editor graph parsing, CPU simulation, sprite-sheet support, billboard and Sprite2D output   |
-| [42-webxr.md](42-webxr.md)                                         | WebXR                    | Forward-looking WebXR/WebGPU binding integration; browser support is not yet available                    |
-| [46-mesh-geometry-update.md](46-mesh-geometry-update.md)           | Mesh Geometry Updates    | In-place procedural geometry updates with stable GPU buffer identities                                    |
-| [47-storage-buffer.md](47-storage-buffer.md)                       | Storage Buffer           | Managed shader-readable storage allocations                                                               |
-| [48-mesh-geometry-access.md](48-mesh-geometry-access.md)           | Mesh Geometry Access     | Independent CPU-side copies of retained mesh geometry                                                     |
-| [49-line-system.md](49-line-system.md)                             | Line System              | CreateLines/CreateLineSystem/CreateDashedLines geometry and rendering                                      |
-| [51-alpha-to-coverage.md](51-alpha-to-coverage.md)                 | Alpha-to-Coverage        | Opt-in multisampled alpha-to-coverage for materials, text, and sprites                                     |
-| [52-screen-space-effects.md](52-screen-space-effects.md)           | Screen-Space Effects     | Opt-in contact shadows and screen-space global illumination frame-graph tasks                             |
-| [53-async-shader-pipeline-compilation.md](53-async-shader-pipeline-compilation.md) | Async Shader Compilation | Prepare ShaderMaterial pipelines before first render                                      |
-| [54-compute.md](54-compute.md)                                     | Compute                  | User-authored GPU compute shaders and frame-graph integration                                             |
-| [54-texture-array.md](54-texture-array.md)                         | Texture2DArray           | Array texture creation and upload for custom shaders                                                      |
-| [54-world-screen-projection.md](54-world-screen-projection.md)     | World-to-Screen Projection | Project world coordinates into backing-store or CSS pixels                                  |
-| [55-gaussian-splat-streaming.md](55-gaussian-splat-streaming.md)   | Gaussian Splat Streaming | Spatially streamed splat LOD manifests and GPU-native rendering                                           |
-| [55-mesh-blending.md](55-mesh-blending.md)                         | Mesh Blending            | Screen-space softening of visible mesh intersections                                                       |
-| [56-accessibility.md](56-accessibility.md)                         | Accessibility            | Scene metadata, projected accessibility tree, and HTML twins                                              |
-| [56-render-shader.md](56-render-shader.md)                         | Render Shaders           | User-authored render passes, arbitrary WGSL, and indexed/indirect draws                                    |
-| [57-texture-region.md](57-texture-region.md)                       | Texture Region Uploads   | Validated region uploads to texture mip and array-layer subresources                                      |
-| [58-texture-render-target.md](58-texture-render-target.md)         | Texture Render Targets   | Borrow texture array layers and mips as render targets                                                     |
-| [59-engine-gpu-events.md](59-engine-gpu-events.md)                 | Engine GPU Events        | Uncaptured GPU errors, device-loss notifications, features, and limits                                     |
-| [mesh-indexed-indirect.md](mesh-indexed-indirect.md)               | Indexed Indirect Meshes  | Mesh-backed indexed indirect rendering                                                                    |
+| [42-node-particle.md](42-node-particle.md)                         | Node Particles            | Node Particle Editor graph parsing, CPU simulation, sprite-sheet support, billboard and Sprite2D output |
+| [42-webxr.md](42-webxr.md)                                         | WebXR                     | Forward-looking WebXR/WebGPU binding integration; browser support is not yet available                    |
+| [46-mesh-geometry-update.md](46-mesh-geometry-update.md)           | Mesh Geometry Updates     | In-place procedural geometry updates with stable GPU buffer identities                                    |
+| [47-storage-buffer.md](47-storage-buffer.md)                       | Storage Buffer            | Managed shader-readable storage allocations                                                               |
+| [48-mesh-geometry-access.md](48-mesh-geometry-access.md)           | Mesh Geometry Access      | Independent CPU-side copies of retained mesh geometry                                                     |
+| [49-line-system.md](49-line-system.md)                             | Line System               | CreateLines/CreateLineSystem/CreateDashedLines geometry and rendering                                      |
+| [51-alpha-to-coverage.md](51-alpha-to-coverage.md)                 | Alpha-to-Coverage         | Opt-in multisampled alpha-to-coverage for materials, text, and sprites                                     |
+| [52-screen-space-effects.md](52-screen-space-effects.md)           | Screen-Space Effects      | Opt-in contact shadows and screen-space global illumination frame-graph tasks                             |
+| [53-async-shader-compilation](53-async-shader-pipeline-compilation.md) | Async Shader Compilation | Prepare ShaderMaterial pipelines before first render                                                     |
+| [54-compute.md](54-compute.md)                                     | Compute                   | User-authored GPU compute shaders and frame-graph integration                                             |
+| [54-texture-array.md](54-texture-array.md)                         | Texture2DArray            | Array texture creation and upload for custom shaders                                                      |
+| [54-world-screen-projection.md](54-world-screen-projection.md)     | World/Screen Projection   | Project world coordinates into backing-store or CSS pixels                                                |
+| [55-gaussian-splat-streaming.md](55-gaussian-splat-streaming.md)   | Gaussian Splat Streaming  | Spatially streamed splat LOD manifests and GPU-native rendering                                           |
+| [55-mesh-blending.md](55-mesh-blending.md)                         | Mesh Blending             | Screen-space softening of visible mesh intersections                                                       |
+| [56-accessibility.md](56-accessibility.md)                         | Accessibility             | Scene metadata, projected accessibility tree, and HTML twins                                              |
+| [56-render-shader.md](56-render-shader.md)                         | Render Shaders            | User-authored render passes, arbitrary WGSL, and indexed/indirect draws                                    |
+| [57-texture-region.md](57-texture-region.md)                       | Texture Region Uploads    | Validated region uploads to texture mip and array-layer subresources                                      |
+| [58-texture-render-target.md](58-texture-render-target.md)         | Texture Render Targets    | Borrow texture array layers and mips as render targets                                                     |
+| [59-engine-gpu-events.md](59-engine-gpu-events.md)                 | Engine GPU Events         | Uncaptured GPU errors, device-loss notifications, features, and limits                                     |
+| [mesh-indexed-indirect.md](mesh-indexed-indirect.md)               | Indexed Indirect Meshes   | Mesh-backed indexed indirect rendering                                                                    |
 | [node-block-selection.md](node-block-selection.md)                 | Node Block Selection     | Node Material block-tree selection and validation                                                          |
-| [sprite-instance-params.md](sprite-instance-params.md)             | Sprite Instance Parameters | Custom per-sprite float parameters for shader extensions                                      |
-| [demo-antigravity-racer.md](demo-antigravity-racer.md)             | Antigravity Racer Demo   | Standalone racer demo architecture                                                                        |
-| [demo-ocean.md](demo-ocean.md)                                     | Ocean Demo               | Standalone ocean demo architecture                                                                         |
+| [sprite-instance-params.md](sprite-instance-params.md)             | Sprite Params             | Custom per-sprite float parameters for shader extensions                                                  |
+| [demo-antigravity-racer.md](demo-antigravity-racer.md)             | Antigravity Racer Demo    | Standalone racer demo architecture                                                                        |
+| [demo-ocean.md](demo-ocean.md)                                     | Ocean Demo                | Standalone ocean demo architecture                                                                         |
 | [demo-playroom.md](demo-playroom.md)                               | Playroom Demo             | WebGPU/Havok gallery demo architecture                                                                     |
 
 ---
