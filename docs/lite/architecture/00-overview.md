@@ -17,7 +17,7 @@
 
 ## Architecture Document Index
 
-The index starts with the common scene, camera, loading, and material workflows, then covers rendering internals, optional subsystems, and standalone demos.
+Pages are roughly ordered by how commonly Babylon Lite users reach for them — start with the scene, camera, and lights, then load and surface a model (loaders, background, materials), animate it, and finally the deeper rendering internals and tooling.
 
 | Doc                                                                | Module                   | Scope                                                                                                     |
 | ------------------------------------------------------------------ | ------------------------ | --------------------------------------------------------------------------------------------------------- |
