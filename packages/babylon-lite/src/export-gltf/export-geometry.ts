@@ -48,12 +48,12 @@ export function exportPrimitive(ctx: ExportContext, mesh: Mesh, convert: boolean
     attributes.POSITION = vectorAccessor(ctx, positions, 3, count, convert ? "position-c" : "v", convert ? mirrorX : null, true);
     const normals = m._cpuNormals;
     if (normals && !m._flatNormal && checkLength(ctx, m, normals, 3, count, "normals")) {
-        attributes.NORMAL = vectorAccessor(ctx, normals, 3, count, convert ? "direction-c" : "v", convert ? mirrorDirection : null, false);
+        attributes.NORMAL = vectorAccessor(ctx, normals, 3, count, convert ? "direction-c" : "unit", convert ? mirrorDirection : repairUnitLength, false);
     }
     const tangents = m._cpuTangents;
     if (tangents && tangents.length > 0) {
         if (checkLength(ctx, m, tangents, 4, count, "tangents")) {
-            attributes.TANGENT = vectorAccessor(ctx, tangents, 4, count, convert ? "tangent-c" : "v", convert ? mirrorTangent : null, false);
+            attributes.TANGENT = vectorAccessor(ctx, tangents, 4, count, convert ? "tangent-c" : "unit", convert ? mirrorTangent : repairUnitLength, false);
         }
     } else if (m._gpu?.tangentBuffer) {
         warnGpuOnly(ctx, m, "tangents");
@@ -191,6 +191,23 @@ function vectorAccessor(
         const bounds = withBounds ? computeMinMax(data, components, count) : undefined;
         return ctx.buffers.addAccessor({ bufferView, componentType: FLOAT, count, type: ACCESSOR_TYPES[components]!, min: bounds?.min, max: bounds?.max });
     });
+}
+
+/** Pass-through normals and tangents: the source array itself when every xyz is unit length within
+ *  glTF-Validator's tolerance (keeping round trips byte-stable), otherwise a copy with the
+ *  offending non-zero vectors renormalized. */
+function repairUnitLength(src: Float32Array, components: number): Float32Array {
+    let out: Float32Array | null = null;
+    for (let i = 0; i < src.length; i += components) {
+        const len = Math.hypot(src[i]!, src[i + 1]!, src[i + 2]!);
+        if (len > 0 && Math.abs(len - 1) > 0.0005) {
+            out ??= src.slice();
+            out[i] = src[i]! / len;
+            out[i + 1] = src[i + 1]! / len;
+            out[i + 2] = src[i + 2]! / len;
+        }
+    }
+    return out ?? src;
 }
 
 /** Copy with component 0 of every element negated (positions and morph deltas). */
