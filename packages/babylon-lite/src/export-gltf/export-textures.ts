@@ -23,6 +23,11 @@ export function captureTextureSlot(
         return null;
     }
     void requestPixels(ctx, tex);
+    // Reserve the member's position so the JSON key order follows capture order; an unresolved
+    // slot stays undefined and JSON.stringify omits it.
+    if (!(key in owner)) {
+        owner[key] = undefined;
+    }
     const pending: PendingSlot = { owner, key, slot, texture: tex, mapping, extra, materialName };
     ctx.slots.push(pending);
     return pending;
@@ -33,6 +38,9 @@ export function captureTextureSlot(
  *  completion order. */
 export function resolveTextureSlots(ctx: ExportContext): void {
     for (const slot of ctx.slots) {
+        if (slot.cancelled) {
+            continue;
+        }
         const pixels = ctx.resolvedPixels.get(slot.texture.texture);
         if (!pixels) {
             continue;

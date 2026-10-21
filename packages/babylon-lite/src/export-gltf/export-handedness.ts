@@ -113,5 +113,5 @@ export function rotationToDirection(dx: number, dy: number, dz: number): [number
  *  and negating X flips winding relative to the normals. So: reverse exactly when
  *  `(authoredSign ?? 1) === (convert ? −1 : +1)`. */
 export function needsWindingFlip(authoredSign: number | undefined, convert: boolean): boolean {
-    return ((authoredSign ?? 1) < 0) === convert;
+    return (authoredSign ?? 1) < 0 === convert;
 }

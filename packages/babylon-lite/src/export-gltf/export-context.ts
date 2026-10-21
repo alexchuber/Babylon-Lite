@@ -68,6 +68,8 @@ export interface PendingSlot {
     /** Extra textureInfo members (`scale` for normal textures, `strength` for occlusion). */
     readonly extra?: Readonly<Record<string, number>>;
     readonly materialName: string;
+    /** Set by fold resolution when the slot's texture folded into factors instead (1×1 ORM). */
+    cancelled?: boolean;
     /** Set at resolution: whether `owner[key]` was written. */
     resolved?: boolean;
 }
@@ -82,6 +84,9 @@ export interface PendingFold {
      *  (alpha already includes the material alpha), `[metallic, roughness]` for ORM. */
     readonly factor: readonly number[];
     readonly materialName: string;
+    /** 1×1 ORM only: the slots that export the texture as an image when it cannot fold (its R byte
+     *  is not 255 while occlusion reads it). Resolution cancels them when the fold applies. */
+    readonly fallbackSlots?: readonly PendingSlot[];
 }
 
 /** @internal Per-call state shared by every export module. Discarded when the call resolves. */
@@ -91,6 +96,9 @@ export interface ExportContext {
     readonly buffers: BufferBuilder;
     /** Exported scene object (node, folded mesh, light, camera) → glTF node index. */
     readonly nodeIndex: Map<object, number>;
+    /** Exported scene object → whether its glTF node holds converted (left-handed source) data
+     *  (true) or pass-through right-handed data (false). Same keys as {@link ExportContext.nodeIndex}. */
+    readonly nodeConvert: Map<object, boolean>;
     /** Source material (after `getMaterialSource`) → glTF material index, per mesh UV state. */
     readonly materialIndex: Map<Material, Map<UvState, number>>;
     /** GPUTexture → its mip-0 pixels in storage row order, read back once per call. Submitted
@@ -166,6 +174,7 @@ export function createExportContext(engine: EngineContext, generator: string): E
         },
         buffers: createBufferBuilder(),
         nodeIndex: new Map(),
+        nodeConvert: new Map(),
         materialIndex: new Map(),
         pixelCache: new Map(),
         readbackErrors: [],
@@ -193,4 +202,19 @@ export function createExportContext(engine: EngineContext, generator: string): E
 export function attachExtension(ctx: ExportContext, owner: { extensions?: GltfJsonObject }, name: string, payload: GltfJsonObject): void {
     (owner.extensions ??= {})[name] = payload;
     ctx.extensionsUsed.add(name);
+}
+
+/** @internal A JSON snapshot of user extras taken during capture, so later writes cannot reach the output.
+ *  Values that are not JSON-serializable are dropped with a warning. */
+export function snapshotExtras(ctx: ExportContext, extras: unknown, ownerName: string | undefined): unknown {
+    if (extras === undefined) {
+        return undefined;
+    }
+    try {
+        const text = JSON.stringify(extras);
+        return text === undefined ? undefined : JSON.parse(text);
+    } catch {
+        ctx.warn(`Extras of "${ownerName ?? ""}" are not JSON-serializable; exporting without them.`);
+        return undefined;
+    }
 }

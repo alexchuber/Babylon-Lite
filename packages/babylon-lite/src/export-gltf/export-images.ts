@@ -17,23 +17,32 @@ return V(vec4f(p,0,1));
 return clamp(textureLoad(src,vec2i(v.p.xy),0),vec4f(0),vec4f(1));
 }`;
 
+/** @internal Why a texture cannot be read back on this engine, or null when it can: no GPU device
+ *  (null engine), not a single 2D image, or a format/usage combination neither path can copy. */
+export function textureReadIssue(ctx: ExportContext, tex: Texture2D): "engine" | "dimension" | null {
+    const gpu = tex.texture;
+    if (!ctx.engine._device || !gpu) {
+        return "engine";
+    }
+    if (gpu.dimension !== "2d" || gpu.depthOrArrayLayers > 1) {
+        return "dimension";
+    }
+    return readbackPath(gpu) === null ? "engine" : null;
+}
+
 /** @internal Check, synchronously, whether a slot's texture can be read back. When it cannot, log
  *  the slot's warning and return false. Also logs the 8-bit clamp warning for float formats. */
 export function checkTextureReadable(ctx: ExportContext, tex: Texture2D, materialName: string): boolean {
-    const gpu = tex.texture;
-    if (!ctx.engine._device) {
+    const issue = textureReadIssue(ctx, tex);
+    if (issue === "engine") {
         ctx.warn(`Texture pixels for material "${materialName}" are not readable on this engine; exporting the material without that texture.`);
         return false;
     }
-    if (gpu.dimension !== "2d" || gpu.depthOrArrayLayers > 1) {
+    if (issue === "dimension") {
         ctx.warn(`Texture for material "${materialName}" is not a single 2D image; exporting the material without that texture.`);
         return false;
     }
-    if (readbackPath(gpu) === null) {
-        ctx.warn(`Texture pixels for material "${materialName}" are not readable on this engine; exporting the material without that texture.`);
-        return false;
-    }
-    if (gpu.format.endsWith("float")) {
+    if (tex.texture.format.endsWith("float")) {
         ctx.warn(`Texture for material "${materialName}" has a floating-point format; exporting it clamped to 8 bits.`);
     }
     return true;

@@ -11,7 +11,7 @@ const CHUNK_BIN = 0x004e4942; // "BIN\0"
  *  the same). The GLB specification allows omitting an empty BIN chunk, but Lite's own GLB parser
  *  requires it, so writing it keeps every export reloadable in Lite. The JSON chunk is padded to
  *  4 bytes with spaces (0x20) and the BIN chunk with zeros. */
-export function frameGlb(json: string, bin: Uint8Array): Uint8Array {
+export function frameGlb(json: string, bin: Uint8Array): Uint8Array<ArrayBuffer> {
     const jsonBytes = new TextEncoder().encode(json);
     const jsonLength = align4(jsonBytes.byteLength);
     const binLength = align4(bin.byteLength);
