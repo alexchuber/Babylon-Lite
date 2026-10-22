@@ -2823,12 +2823,79 @@
         "skipPerf": true
     },
     {
+        "id": 319,
+        "slug": "scene319-gltf-export-morph-animation-group",
+        "name": "Scene 319 — glTF Export: Morph Target Animation Group",
+        "maxMad": 1,
+        "description": "Babylon.js visualization test “GLTF Serializer Morph Target Animation Group” (playground #T087A8#29): The alien model exported from a right-handed source, reloaded, and its morph animation group paused at 5 s.",
+        "tags": ["gltf", "export"],
+        "skipPerf": true
+    },
+    {
+        "id": 320,
+        "slug": "scene320-gltf-export-draco",
+        "name": "Scene 320 — glTF Export: Draco Source Round Trip",
+        "maxMad": 0.9,
+        "maxRawKB": 136.8,
+        "description": "Babylon.js visualization test “GLTF Serializer KHR draco mesh compression” (playground #F8BF8N#3): The Alien glTF exported and reloaded (Lite writes plain accessors; Draco output is out of scope).",
+        "tags": ["gltf", "export"],
+        "skipPerf": true
+    },
+    {
+        "id": 321,
+        "slug": "scene321-gltf-export-clearcoat",
+        "name": "Scene 321 — glTF Export: KHR_materials_clearcoat",
+        "maxMad": 1,
+        "description": "Babylon.js visualization test “GLTF Serializer KHR materials clearcoat” (playground #9N6CLU#23): Khronos ClearCoatTest plus a combined intensity/roughness clearcoat row, exported and reloaded under a DDS skybox.",
+        "tags": ["gltf", "export"],
+        "skipPerf": true
+    },
+    {
+        "id": 322,
+        "slug": "scene322-gltf-export-gpu-instancing",
+        "name": "Scene 322 — glTF Export: EXT_mesh_gpu_instancing",
+        "maxMad": 6.0,
+        "maxRawKB": 123.6,
+        "description": "Babylon.js visualization test “GLTF Serializer KHR gpu instancing” (playground #1Q2BWN#10): TeapotsGalore thin instances exported and reloaded.",
+        "tags": ["gltf", "export"],
+        "skipPerf": true
+    },
+    {
+        "id": 323,
+        "slug": "scene323-gltf-export-punctual-lights",
+        "name": "Scene 323 — glTF Export: KHR_lights_punctual",
+        "maxMad": 2.9,
+        "maxRawKB": 120.9,
+        "description": "Babylon.js visualization test “GLTF Serializer KHR punctual light, left-handed” (playground #FLXW8B#27): Directional, point and spot lights with glTF falloff, exported and reloaded over a PBR ground.",
+        "tags": ["gltf", "export"],
+        "skipPerf": true
+    },
+    {
         "id": 324,
         "slug": "scene324-gltf-export-rotation-conversion",
         "name": "Scene 324 — glTF Export: Rotation Conversion",
         "maxMad": 0.15,
         "maxRawKB": 119.2,
         "description": "Babylon.js visualization test “GLTF Serializer Rotation conversion, left-handed” (playground #UK7FLI#1): Six rotated parent/child box pairs exported and reloaded.",
+        "tags": ["gltf", "export"],
+        "skipPerf": true
+    },
+    {
+        "id": 325,
+        "slug": "scene325-gltf-export-texture-roundtrip",
+        "name": "Scene 325 — glTF Export: Texture Round Trip",
+        "maxMad": 0.9,
+        "maxRawKB": 122.9,
+        "description": "Babylon.js visualization test “GLTF Serializer un/compressed texture roundtrip” (playground #8NTR5X#8): PNG, JPEG and KTX2 textures loaded four ways, exported, reloaded and shown unlit.",
+        "tags": ["gltf", "export"],
+        "skipPerf": true
+    },
+    {
+        "id": 326,
+        "slug": "scene326-gltf-export-multimaterial",
+        "name": "Scene 326 — glTF Export: Multi-Material Raw Textures",
+        "maxMad": 1,
+        "description": "Babylon.js visualization test “GLTF Serializer multimaterial with raw texture” (playground #KU72PX#0): A double-sided tiled plane split between two raw-texture PBR materials, exported with its camera and reloaded.",
         "tags": ["gltf", "export"],
         "skipPerf": true
     },
