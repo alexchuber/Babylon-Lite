@@ -25,18 +25,33 @@ export { Plane } from "./math/plane.js";
 export { Ray } from "./math/ray.js";
 export { Frustum } from "./math/frustum.js";
 export { Size, Viewport } from "./math/size.js";
+export { Polar } from "./math/polar.js";
+export { Spherical } from "./math/spherical.js";
 export { Angle, Curve3, Path3D } from "./math/curve.js";
+export { MinTemperatureKelvin, MaxTintMagnitude, TemperatureTintToXyz, GetWhiteBalanceMatrix } from "./math/color-temperature.js";
 
 // ─── Culling ─────────────────────────────────────────────────────────
 export { BoundingBox, BoundingSphere, BoundingInfo } from "./culling/bounding.js";
+export { PickingInfo } from "./culling/picking-info.js";
 
 // ─── Engine ──────────────────────────────────────────────────────────
 export { AbstractEngine, ThinEngine, WebGPUEngine, Engine, NullEngine } from "./engine/engine.js";
+export type { WebGPUEngineOptions } from "./engine/engine.js";
+
+// ─── Compute and buffers ─────────────────────────────────────────────
+export { ComputeShader, ComputeShaderParse, RegisterComputeShader } from "./compute/compute-shader.js";
+export type { ComputeBindingLocation, ComputeBindingMapping, IComputeShaderOptions, IComputeShaderPath } from "./compute/compute-shader.js";
+export { StorageBuffer } from "./buffers/storage-buffer.js";
+export type { DataArray } from "./buffers/storage-buffer.js";
+export { UniformBuffer } from "./materials/uniform-buffer.js";
 
 // ─── Scene graph ─────────────────────────────────────────────────────
 export { Node } from "./node/node.js";
+export type { IAccessibilityTag } from "./node/node.js";
 export { AbstractScene } from "./scene/abstract-scene.js";
 export { Scene } from "./scene/scene.js";
+export type { MeshPredicate, TrianglePickingPredicate } from "./scene/scene.js";
+export { PointerEventTypes, PointerInfo } from "./events/pointer-events.js";
 
 // ─── Cameras ─────────────────────────────────────────────────────────
 export {
@@ -74,12 +89,39 @@ export {
     CreateDashedLines,
     CreateTiledBox,
     CreateTiledPlane,
+    CreatePolygon,
+    ExtrudePolygon,
+    CreatePolygonVertexData,
+    PolygonBuilder,
+    RegisterPolygonBuilder,
 } from "./meshes/meshes.js";
 export { CSG, CSG2, InitializeCSG2Async } from "./meshes/csg.js";
 export { MeshoptCompression } from "./meshes/compression.js";
 export { MorphTarget, MorphTargetManager } from "./morph/morph.js";
-export { GaussianSplattingMesh } from "./meshes/gaussian-splatting.js";
-export type { ISafeOrbitCameraLimits } from "./meshes/gaussian-splatting.js";
+export { _GetPackedShBytesPerSplat, _HasGaussianPointSplattingProjectedDepth, GaussianSplattingMesh } from "./meshes/gaussian-splatting.js";
+export type { IGaussianPointSplattingProgress, ISafeOrbitCameraLimits } from "./meshes/gaussian-splatting.js";
+export {
+    MeshBlendingRadiusClass,
+    PackMeshBlendingTag,
+    UnpackMeshBlendingTag,
+    MeshBlendQuality,
+    MeshBlendDebugMode,
+    MeshBlendDepthType,
+    CreateDefaultMeshBlendRadiusDefinitions,
+    ThinMeshBlendingPostProcess,
+    MeshBlendingPostProcess,
+    FrameGraphMeshBlendingTask,
+    NodeRenderGraphMeshBlendingPostProcessBlock,
+    RegisterMeshBlendingPostProcessBlock,
+} from "./meshes/mesh-blending.js";
+export type {
+    IMeshBlendingTag,
+    IMeshBlendRadiusDefinition,
+    MeshBlendRadiusDefinitions,
+    IMeshBlendConfiguration,
+    IThinMeshBlendingPostProcessOptions,
+    IMeshBlendingPostProcessOptions,
+} from "./meshes/mesh-blending.js";
 
 // ─── Materials ───────────────────────────────────────────────────────
 export {
@@ -96,7 +138,9 @@ export {
 } from "./materials/materials.js";
 
 // ─── Textures ────────────────────────────────────────────────────────
-export { BaseTexture, Texture, RawTexture, RawTexture3D, DynamicTexture, CubeTexture, HDRCubeTexture, RenderTargetTexture } from "./textures/textures.js";
+export { BaseTexture, Texture, RawTexture, RawTexture3D, DynamicTexture, HtmlTexture, CubeTexture, HDRCubeTexture, RenderTargetTexture } from "./textures/textures.js";
+export { ExternalTexture } from "./textures/external-texture.js";
+export type { IHtmlTextureOptions } from "./textures/textures.js";
 export {
     RawTexture2DArray,
     UploadImageToTexture2DArrayLayer,
@@ -107,9 +151,23 @@ export {
 export type { IUploadImageToTexture2DArrayLayerOptions, ICreateTexture2DArrayFromImageUrlsOptions, ICreateTexture2DArrayFromKTX2Options } from "./textures/raw-texture-2d-array.js";
 
 // ─── Loading ─────────────────────────────────────────────────────────
-export { SceneLoader, AssetContainer, ImportMeshAsync, AppendSceneAsync, LoadAssetContainerAsync } from "./loading/scene-loader.js";
+export { SceneLoader, AssetContainer, ImportMeshAsync, AppendSceneAsync, LoadAssetContainerAsync, registerBuiltInLoaders } from "./loading/scene-loader.js";
+export type { ISceneLoaderProgressEvent, ISceneLoaderOptions, ImportMeshOptions, AppendOptions, LoadAssetContainerOptions } from "./loading/scene-loader.js";
 export { AssetsManager, AbstractAssetTask, CustomAssetTask } from "./loading/assets-manager.js";
 export { KHR_materials_variants } from "./loading/material-variants.js";
+export { USDFileLoader, RegisterUSDFileLoader } from "./loading/usd-file-loader.js";
+export { _RegisterUSDLoaderDependencies } from "./loading/usd-file-loader.js";
+export type {
+    USDBinaryInput,
+    USDVirtualFiles,
+    USDLoadProgress,
+    USDImportTimings,
+    USDImportStatistics,
+    USDImportDiagnostics,
+    USDFileLoaderOptions,
+} from "./loading/usd-file-loader.js";
+export { SPLATFileLoader, RegisterSPLATFileLoader } from "./loading/splat-file-loader.js";
+export type { SPLATLoadingOptions } from "./loading/splat-file-loader.js";
 
 // ─── Picking ─────────────────────────────────────────────────────────
 export { GPUPicker } from "./picking/gpu-picker.js";
@@ -130,6 +188,7 @@ export {
     PlaneDragGizmo,
     AxisScaleGizmo,
 } from "./gizmos/gizmos.js";
+export type { DragEvent, DragStartEndEvent } from "./gizmos/gizmos.js";
 
 // ─── Behaviors ───────────────────────────────────────────────────────
 export { AutoRotationBehavior, BouncingBehavior, FramingBehavior } from "./behaviors/behaviors.js";
@@ -146,7 +205,7 @@ export { GetSupportedSimultaneousLights } from "./materials/material-helpers.js"
 
 // ─── Animation ───────────────────────────────────────────────────────
 export { Animation, AnimationGroup, AnimationTypes, AnimationLoopModes, AnimationKeyInterpolation, Animatable } from "./animations/animation.js";
-export type { IAnimationKey, AnimationGroupState } from "./animations/animation.js";
+export type { AnimationGroupState, AnimationValue, IAnimationKey, IAnimationVectorValue } from "./animations/animation.js";
 export {
     EasingFunction,
     CircleEase,
@@ -159,17 +218,29 @@ export {
     BackEase,
     ElasticEase,
     BounceEase,
+    PowerEase,
+    BezierCurveEase,
     EASINGMODE_EASEIN,
     EASINGMODE_EASEOUT,
     EASINGMODE_EASEINOUT,
 } from "./animations/easing.js";
+export type { IEasingFunction } from "./animations/easing.js";
 
 // ─── Misc ────────────────────────────────────────────────────────────
 export { Observable } from "./misc/observable.js";
 export { Tools } from "./misc/tools.js";
 export { RandomGUID, GUID } from "./misc/guid.js";
 export { SmartArray, StringDictionary, Tags, PerformanceMonitor, FactorGradient, ColorGradient, Logger, PrecisionDate } from "./misc/misc-utils.js";
-export { ScenePerformancePriority, ShaderLanguage, ImageProcessingConfiguration, Constants } from "./misc/engine-constants.js";
+export {
+    ScenePerformancePriority,
+    ShaderLanguage,
+    ImageProcessingConfiguration,
+    Constants,
+    RegisterImageProcessingConfiguration,
+    RegisterAbstractEngineTextureLoaders,
+    RegisterEnginesExtensionsEngineTexture2DArrayImageSource,
+    RegisterEnginesWebGPUExtensionsEngineTexture2DArrayImageSource,
+} from "./misc/engine-constants.js";
 
 // ─── Actions ─────────────────────────────────────────────────────────
 export {
@@ -246,6 +317,10 @@ export {
     MultiMaterial,
     ShaderMaterial,
     BackgroundMaterial,
+    OpenPBRMaterial,
+    OpenPBRMaterialDefines,
+    RegisterOpenpbrMaterial,
+    OpenPBRMaterialLoadingAdapter,
     RectAreaLight,
     GPUParticleSystem,
     SolidParticleSystem,
@@ -273,7 +348,6 @@ export {
     EdgesRenderer,
     OutlineRenderer,
     MirrorTexture,
-    HtmlTexture,
     HtmlInteractionManager,
     HtmlRaycastInteractionManager,
     IsHtmlInCanvasUploadSupported,
@@ -283,9 +357,6 @@ export {
     IsHtmlInCanvasSupportedNatively,
     InstallHtmlInCanvasPolyfill,
     UninstallHtmlInCanvasPolyfill,
-    GaussianSplattingStream,
-    AddGaussianSplattingStreamPart,
-    AddGaussianSplattingStreamPartAsync,
     Sound,
     PointerDragBehavior,
     BaseSixDofDragBehavior,
@@ -299,21 +370,70 @@ export {
     InterpolatingBehavior,
     GeospatialClippingBehavior,
     SceneSerializer,
+    FluidRenderingObject,
+    FluidRenderingObjectParticleSystem,
+    FluidRenderingObjectCustomParticles,
+    FluidRenderingTargetRenderer,
+    FluidRenderer,
+    FluidRendererSceneComponent,
+    RegisterFluidRenderer,
+    DitheredTileFadeMaterialPlugin,
+    GaussianSplattingMaterial,
+    GaussianSplattingDebugMaterialPlugin,
+    GaussianSplattingGpuPickingMaterialPlugin,
+    GaussianSplattingSolidColorMaterialPlugin,
+    GaussianSplattingSizeMaterialPlugin,
+    GaussianSplattingOverdrawMaterialPlugin,
+    RegisterGaussianSplattingDebugMaterialPlugin,
+    RegisterGaussianSplattingGpuPickingMaterialPlugin,
+    RegisterGaussianSplattingSolidColorMaterialPlugin,
+    RegisterGaussianSplattingSizeMaterialPlugin,
+    RegisterGaussianSplattingOverdrawMaterialPlugin,
+    RegisterGaussianSplattingMaterial,
+    GaussianPointSplattingRenderer,
+    GaussianPointSplattingBlitMaterial,
+    GaussianPointSplattingDepthBlitMaterial,
+    GaussianSplattingMaxPartCount,
+    GetGaussianSplattingMaxPartCount,
+    GetPartIndexVaryingDeclaration,
+    RootMotionSource,
+    RootMotionClip,
+    RootMotionController,
+    FlowGraphValidationSeverity,
+    ValidateFlowGraph,
+    ValidateFlowGraphWithBlockList,
 } from "./unsupported/unsupported-apis.js";
+export { MaterialPluginBase, MaterialPluginManager } from "./materials/material-plugin.js";
+export type { MaterialPluginDefines, MaterialPluginCustomCode } from "./materials/material-plugin.js";
+export * as GLTF2 from "./loading/gltf2.js";
+export * as GLTF1 from "./loading/gltf1.js";
 export type {
-    IHtmlTextureOptions,
     IHtmlInteractionManagerOptions,
     IHtmlRaycastInteractionManagerOptions,
     IHtmlInCanvasPolyfillModule,
     IInstallHtmlInCanvasPolyfillOptions,
+    DitheredTileFadeSupportedMaterial,
+    DitheredTileFadeMesh,
+    IDitheredTileFadeBounds,
+    IGaussianSplattingDebugOptions,
+    IFlowGraphValidationIssue,
+    IFlowGraphValidationResult,
+    IRootMotionClipOptions,
+} from "./unsupported/unsupported-apis.js";
+export {
+    GaussianSplattingStream,
+    GaussianSplattingPartProxyMesh,
+    AddGaussianSplattingStreamPart,
+    AddGaussianSplattingStreamPartAsync,
+} from "./meshes/gaussian-splatting-stream.js";
+export type {
     GaussianSplattingStreamDebugLodSource,
+    GaussianSplattingStreamLod0SplatCount,
     IGaussianSplattingStreamOptions,
     ISOGLODMetadata,
     IGaussianSplattingStreamingPart,
-} from "./unsupported/unsupported-apis.js";
+} from "./meshes/gaussian-splatting-stream.js";
 export {
-    Skeleton,
-    Bone,
     ReflectionProbe,
     Layer,
     EffectLayer,
@@ -321,6 +441,11 @@ export {
     GeometryBufferRenderer,
     BoundingBoxRenderer,
     PostProcess,
+    Effect,
+    EffectWrapper,
+    FrameGraphMinMaxReducerTask,
+    NodeRenderGraphMinMaxReducerBlock,
+    RegisterMinMaxReducerBlock,
     BlackAndWhitePostProcess,
     BlurPostProcess,
     BloomEffect,
@@ -334,9 +459,6 @@ export {
     ThinFSR1SharpenPostProcess,
     ParticleHelper,
     PointsCloudSystem,
-    PhysicsAggregate,
-    PhysicsBody,
-    PhysicsShape,
     CannonJSPlugin,
     AmmoJSPlugin,
     RecastJSPlugin,
@@ -345,14 +467,66 @@ export {
     OBJFileLoader,
     STLFileLoader,
     FBXFileLoader,
+    FBXFileLoaderMetadata,
+    FBXConstraintBehavior,
+    FBXConstraintSolver,
     BVHFileLoader,
     SpriteMap,
     SpritePackedManager,
     VirtualJoystick,
     SceneOptimizer,
 } from "./unsupported/unsupported-extended.js";
+export type {
+    EffectWrapperCustomShaderCodeProcessing,
+    EffectWrapperCreationOptions,
+    GeometryRenderingObjectIdProvider,
+    FBXNormalMapCoordinateSystem,
+    FBXLoaderWarning,
+    FBXFileLoaderOptions,
+    FBXConstraintType,
+    FBXConstraintTarget,
+    FBXConstraintData,
+    FBXConstraintBehaviorTarget,
+    FBXConstraintBehaviorOptions,
+} from "./unsupported/unsupported-extended.js";
+export { Skeleton, Bone } from "./bones/skeleton.js";
 
-export { HavokPlugin, PhysicsEngine, PhysicsShapeType, PhysicsMotionType, PhysicsPrestepType, PhysicsConstraintType } from "./physics/physics.js";
+export {
+    HavokPlugin,
+    PhysicsEngine,
+    PhysicsAggregate,
+    PhysicsBody,
+    PhysicsShape,
+    PhysicsShapeType,
+    PhysicsMotionType,
+    PhysicsPrestepType,
+    PhysicsConstraintType,
+    PhysicsConstraintAxis,
+    PhysicsConstraint,
+    HingeConstraint,
+    BallAndSocketConstraint,
+    DistanceConstraint,
+    SliderConstraint,
+    LockConstraint,
+    PrismaticConstraint,
+    Physics6DoFConstraint,
+    Physics6DoFLimit,
+    SpringConstraint,
+    PhysicsCharacterController,
+    CharacterSupportedState,
+    CastingResult,
+    PhysicsRaycastResult,
+} from "./physics/physics.js";
+export type {
+    PhysicsAggregateParameters,
+    PhysicsMaterial,
+    PhysicShapeOptions,
+    CharacterShapeOptions,
+    CharacterSurfaceInfo,
+    ICharacterControllerCollisionEvent,
+    IRaycastQuery,
+    PhysicsConstraintParameters,
+} from "./physics/physics.js";
 
 // ─── Node Particle Editor (NPE) ──────────────────────────────────────
 export { NodeParticleSystemSet, ParticleSystemSet } from "./particles/node-particle-system-set.js";

@@ -1,5 +1,26 @@
 [
     {
+        "slug": "ocean",
+        "name": "Ocean",
+        "description": "A GPU spectral ocean driven by Babylon Lite compute tasks: JONSWAP spectrum generation, time-dependent amplitudes, multi-stage 2D inverse FFT, and a displaced water surface. Port of Playground YX6IB8#758.",
+        "tags": ["compute", "shader", "showcase"],
+        "mobile": false
+    },
+    {
+        "slug": "playroom",
+        "name": "The Playroom",
+        "description": "A full Babylon Lite port of BabylonJS/ThePlayroom: launch a skinned bunny ragdoll through 103 authored toy-puzzle placements, score collisions, trigger chain-reaction poppers, and use free mode to push individual physics instances.",
+        "tags": ["game", "physics", "showcase"],
+        "mobile": true
+    },
+    {
+        "slug": "trogir-streaming",
+        "name": "Trogir Gaussian Splat Streaming",
+        "description": "Stream Paolo Tosolini’s public Trogir capture with live detail controls, optional point sampling and accumulation settings, and an FPS counter. An asset-root override supports local or alternate hosted copies.",
+        "tags": ["showcase", "gaussian splatting", "streaming"],
+        "mobile": false
+    },
+    {
         "slug": "npe-sprite2d",
         "name": "NPE on Sprite2D",
         "description": "An authored Node Particle Editor graph rendered through Lite's scene-less pure-2D SpriteRenderer. The NPE simulation stays world-space while the native bridge maps its live particle columns to one allocation-free Sprite2D layer.",
@@ -76,7 +97,7 @@
     {
         "slug": "break-meshes",
         "name": "Break Meshes",
-        "description": "Voronoi mesh fracture + physics: the Khronos BoomBox glTF is split into cell pieces via half-space clipping (ported from CedricGuillemet/64Kb5) with UV interpolation, then duplicated into eleven randomly-rotated instances scattered across the ground. Each boombox rests assembled on its own static convex-hull cells; click one to GPU-pick it and shatter just that model — its cells flip to dynamic and the picked cell is punched along the pick ray. Original surfaces keep the PBR material; the exposed interior cut faces use a separate 'fractured core' material, all lit by an HDR environment with soft shadows.",
+        "description": "Voronoi mesh fracture + physics: the Khronos BoomBox glTF is split into cell pieces via half-space clipping with UV interpolation, then duplicated into eleven randomly-rotated instances scattered across the ground. Each boombox rests assembled on its own static convex-hull cells; click one to GPU-pick it and shatter just that model — its cells flip to dynamic and the picked cell is punched along the pick ray. Original surfaces keep the PBR material; the exposed interior cut faces use a separate 'fractured core' material, all lit by an HDR environment with soft shadows.",
         "tags": ["pbr", "gltf", "physics", "showcase"],
         "mobile": true
     },
@@ -85,6 +106,13 @@
         "name": "Mosquito in Amber",
         "description": "glTF PBR showcase: the Khronos MosquitoInAmber model (KHR_materials_transmission + ior + volume). Frame-graph scene-texture transmission renders the refractive amber.",
         "tags": ["showcase"],
+        "mobile": true
+    },
+    {
+        "slug": "calculator",
+        "name": "Calculator (KHR_interactivity)",
+        "description": "The Khronos Calculator glTF running on Babylon Lite's KHR_interactivity flow-graph runtime, with clickable buttons and live material updates.",
+        "tags": ["showcase", "interactivity", "gltf"],
         "mobile": true
     },
     {
@@ -103,6 +131,13 @@
         "mobile": true
     },
     {
+        "slug": "mesh-lod",
+        "name": "MeshLoD Statue",
+        "description": "Experimental MeshLoD streaming: a 311k-triangle photogrammetry statue served as three range-addressable .mlod primitives through Babylon Lite's opt-in MeshLoD path. GPU compute selects meshlets by screen-space error and streams only the pages the current view needs, refining from a tiny always-resident coarse fallback up to full detail. Live diagnostics, debug views, and simulated bandwidth/latency let you watch selection, streaming, residency, and coarse fallback react to the camera. \"Harvard-Yenching Institute statue\" by Alexandre Tokovinine (https://sketchfab.com/tokovinin3d), CC BY 4.0.",
+        "tags": ["gltf", "streaming", "showcase"],
+        "mobile": false
+    },
+    {
         "slug": "sandblox",
         "name": "Sandblox",
         "description": "Build-and-play sandbox for small block worlds. Drop blocks into a starter scene, reshape them with move, clone, resize, paint, and delete tools, then run your character through what you built.",
@@ -116,5 +151,12 @@
         "tags": ["game", "showcase"],
         "fetch": "racer",
         "mobile": true
+    },
+    {
+        "slug": "antigravity-racer",
+        "name": "Antigravity Racer",
+        "description": "Race hover-ships against AI opponents, hit boost strips, and reshape the track live. Play solo or in two-player split-screen with keyboard or gamepad.",
+        "tags": ["game", "racing", "showcase"],
+        "mobile": false
     }
 ]

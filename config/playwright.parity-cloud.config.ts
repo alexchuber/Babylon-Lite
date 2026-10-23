@@ -36,6 +36,7 @@ const useBrowserStack = !!(process.env.BROWSERSTACK_USERNAME && process.env.BROW
 // Number of parallel BrowserStack sessions / Playwright workers. Set by the wait
 // script in CI; defaults conservatively so a bare cloud run grabs one session.
 const ciWorkers = process.env.CIWORKERS && Number(process.env.CIWORKERS) > 0 ? Number(process.env.CIWORKERS) : undefined;
+const selectedSceneIds = process.env.AFFECTED_PARITY_SCENE_IDS?.split(",").filter(Boolean);
 
 // SwiftShader flags for local CI fallback (no BrowserStack)
 const swiftShaderArgs =
@@ -44,7 +45,11 @@ const swiftShaderArgs =
         : [];
 
 export default defineConfig({
-    testDir: "../tests/lite/parity/scenes",
+    testDir: "../tests/lite/parity",
+    testMatch: [
+        ...(selectedSceneIds?.length ? selectedSceneIds.map((id) => `**/scenes/scene${id}-*.spec.ts`) : ["**/scenes/*.spec.ts"]),
+        "**/regressions/sprite-instance-params.spec.ts",
+    ],
     timeout: 120_000,
     retries: 1,
     workers: ciWorkers ?? (useBrowserStack ? 1 : 2),
@@ -59,8 +64,8 @@ export default defineConfig({
     use: {
         headless: true,
         viewport: { width: 1280, height: 720 },
-        // Keep traces off: the BrowserStack wsEndpoint embeds the access key and
-        // could otherwise be captured in published trace artifacts.
+        // Keep all tracing, including retry tracing, off: the BrowserStack
+        // wsEndpoint embeds credentials that traces can capture.
         trace: "off",
         ...(useBrowserStack
             ? { connectOptions: { wsEndpoint: buildBrowserStackEndpoint() } }
@@ -75,6 +80,6 @@ export default defineConfig({
         command: "pnpm --filter @babylon-lite/lab dev",
         port: 5174,
         reuseExistingServer: true,
-        timeout: 15_000,
+        timeout: 180_000,
     },
 });

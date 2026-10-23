@@ -1,6 +1,7 @@
 import { F32 } from "../engine/typed-arrays.js";
 import type { SceneContext } from "../scene/scene.js";
-import { acquireGPUTexture, releaseGPUTexture } from "../resource/gpu-pool.js";
+import { acquireGPUTexture } from "../resource/gpu-texture-acquire.js";
+import { releaseGPUTexture } from "../resource/gpu-texture-release.js";
 import { assembleEnvironmentTextures, loadBrdfImage } from "./env-helpers.js";
 import { parseEnvFile } from "./env-parse.js";
 import { computeSceneSize } from "../material/pbr/scene-size.js";
@@ -21,6 +22,8 @@ export interface EnvironmentTextures {
     sphericalHarmonics: Float32Array;
     /** LOD generation scale for specular IBL sampling. Default 0.8 (matches BJS BaseTexture). */
     lodGenerationScale: number;
+    /** LOD generation offset for prefiltered cubemap sampling. Default 0. */
+    lodGenerationOffset?: number;
 }
 
 /**
@@ -131,7 +134,7 @@ export async function loadEnvironment(
         }
         if (skyboxIsEnv) {
             const skybox = await import("../material/pbr/background-hdr-skybox.js");
-            scene._renderables.push(skybox.buildHdrSkyboxRenderable(scene, textures, skyHalfSize, rootPosition, primaryColor));
+            scene._renderables.push(await skybox.buildHdrSkyboxRenderable(scene, textures, skyHalfSize, rootPosition, primaryColor));
         }
     });
 

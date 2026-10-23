@@ -1,9 +1,10 @@
-import { getOrCreateSampler } from "../resource/gpu-pool.js";
+import { getOrCreateSampler } from "../resource/sampler-pool.js";
 import { uploadBaseColorFactorTexture, uploadOrmFactorTexture } from "./gltf-pbr-builder.js";
 import type { GenerateMipmapsFn } from "./gltf-pbr-builder.js";
 import type { EngineContext } from "../engine/engine.js";
 import type { Texture2D } from "../texture/texture-2d.js";
 import type { GltfMaterialData } from "./gltf-material.js";
+import type { PbrMaterialProps } from "../material/pbr/pbr-material.js";
 
 /** Map a glTF textureInfo's sampler (wrapS/wrapT/magFilter/minFilter) to a WebGPU sampler
  *  descriptor. glTF wrap: 33071 CLAMP_TO_EDGE, 33648 MIRRORED_REPEAT, else REPEAT.
@@ -47,11 +48,7 @@ export function makeSamplerFor(engine: EngineContext, json: any, defaultSampler:
             return defaultSampler;
         }
         const desc = gltfTexSamplerDesc(json, texInfo);
-        // A non-mipmap sampler (lodMaxClamp 0) is created directly: the shared cache key omits
-        // the LOD clamp, so caching it there could alias a full-mip sampler with identical
-        // filter/wrap. These are rare (SDF/UI textures), so per-call creation is cheaper than
-        // growing the universal sampler key — which would move every non-glTF scene's bundle.
-        const sampler = desc.lodMaxClamp === 0 ? engine._device.createSampler(desc) : getOrCreateSampler(engine, desc);
+        const sampler = getOrCreateSampler(engine, desc);
         engine._deviceLostRecovery?._samplerDescriptors.set(sampler, desc);
         return sampler;
     };
@@ -68,26 +65,41 @@ export function buildSampledPbrTextures(
     defaultSampler: GPUSampler,
     generateMipmaps: GenerateMipmapsFn,
     samplerFor: (texInfo: any) => GPUSampler,
-    getCachedTex: (bitmap: ImageBitmap, srgb: boolean) => Texture2D
-): { baseColorTexture: Texture2D; ormTexture: Texture2D; normalTexture: Texture2D | undefined; emissiveTexture: Texture2D | undefined } {
+    getCachedTex: (bitmap: ImageBitmap, srgb: boolean) => Texture2D,
+    extLayers: Partial<PbrMaterialProps> | undefined
+): { baseColorTexture: Texture2D | undefined; ormTexture: Texture2D | undefined; normalTexture: Texture2D | undefined; emissiveTexture: Texture2D | undefined } {
     const def = mat._rawMatDef ?? {};
     const pbr = def.pbrMetallicRoughness ?? {};
     const cached = (bitmap: ImageBitmap, srgb: boolean, texInfo: any): Texture2D => {
         const s = samplerFor(texInfo);
         const tex = getCachedTex(bitmap, srgb);
-        return s === defaultSampler ? tex : { ...tex, sampler: s };
+        if (s === defaultSampler) {
+            return tex;
+        }
+        // Same upload, different sampler: a derived wrapper that owns its own `texture` field but
+        // never passed through the capture stamp. Registered through the capture seam rather than
+        // texture-2d's hook so this module keeps its type-only import of texture-2d — a runtime
+        // import edge here pulls that module into bundles that otherwise never load it.
+        const derived = { ...tex, sampler: s } as Texture2D;
+        engine._dlr?.d(tex, derived);
+        return derived;
     };
 
-    const baseColorTexture = mat._baseColorImage
-        ? cached(mat._baseColorImage, true, pbr.baseColorTexture)
-        : uploadBaseColorFactorTexture(engine, mat._baseColorFactor, defaultSampler, generateMipmaps);
+    // A slot `extLayers` supply gets no upload — see buildDefaultPbrTextures.
+    const baseColorTexture = extLayers?.baseColorTexture
+        ? undefined
+        : mat._baseColorImage
+          ? cached(mat._baseColorImage, true, pbr.baseColorTexture)
+          : uploadBaseColorFactorTexture(engine, mat._baseColorFactor, defaultSampler, generateMipmaps);
     const normalTexture = mat._normalImage ? cached(mat._normalImage, false, def.normalTexture) : undefined;
     const emissiveTexture = mat._emissiveImage ? cached(mat._emissiveImage, true, def.emissiveTexture) : undefined;
 
     const single = mat._metallicRoughnessImage ?? mat._occlusionImage;
     const ormTexInfo = mat._metallicRoughnessImage ? pbr.metallicRoughnessTexture : def.occlusionTexture;
-    let ormTexture: Texture2D;
-    if (single && (!mat._metallicRoughnessImage || !mat._occlusionImage || mat._metallicRoughnessImage === mat._occlusionImage)) {
+    let ormTexture: Texture2D | undefined;
+    if (extLayers?.ormTexture) {
+        ormTexture = undefined;
+    } else if (single && (!mat._metallicRoughnessImage || !mat._occlusionImage || mat._metallicRoughnessImage === mat._occlusionImage)) {
         ormTexture = cached(single, false, ormTexInfo);
     } else if (!single) {
         ormTexture = uploadOrmFactorTexture(engine, mat._roughnessFactor, mat._metallicFactor, defaultSampler, generateMipmaps);

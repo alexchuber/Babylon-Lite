@@ -60,10 +60,9 @@ export function createFrameGraph(_engine: EngineContext): FrameGraph {
             // Phase 2 — initialize. Runs after every task has finished recording
             // so passes can safely reference resources allocated by other tasks
             // (e.g. RTTs whose textures are wired up by a later task's `record`).
-            for (let i = 0; i < fg._tasks.length; i++) {
-                const passes = fg._tasks[i]!._passes;
-                for (let j = 0; j < passes.length; j++) {
-                    passes[j]!._initialize();
+            for (const task of fg._tasks) {
+                for (const pass of task._passes) {
+                    pass._initialize();
                 }
             }
         },
@@ -71,6 +70,9 @@ export function createFrameGraph(_engine: EngineContext): FrameGraph {
         execute(): number {
             let drawCalls = 0;
             for (const task of fg._tasks) {
+                if (task.executionEnabled === false) {
+                    continue;
+                }
                 if (task.execute) {
                     drawCalls += task.execute();
                 } else {
@@ -91,6 +93,16 @@ export function createFrameGraph(_engine: EngineContext): FrameGraph {
         },
     };
     return fg;
+}
+
+/**
+ * Returns the tasks registered on a frame graph, in execution order.
+ * The returned array is the graph's live task list (not a snapshot): it reflects later
+ * task additions/removals and is emptied by dispose. Do not mutate it; copy it if a stable
+ * snapshot is needed. Composite tasks appear once; their internal sub-passes are not listed.
+ */
+export function getFrameGraphTasks(frameGraph: FrameGraph): readonly Task[] {
+    return frameGraph._tasks;
 }
 
 /** Record and initialize one task already present in a live graph without rebuilding existing tasks. */

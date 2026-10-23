@@ -6,6 +6,7 @@ import { enableDeviceLostSpriteRecovery } from "../../../packages/babylon-lite/s
 import { createTexture2DFromPixels, createRenderTexture2D } from "../../../packages/babylon-lite/src/texture/pixels-texture";
 import { createSprite2DLayer, addSprite2DIndex } from "../../../packages/babylon-lite/src/sprite/sprite-2d";
 import { createSprite2DCustomShader } from "../../../packages/babylon-lite/src/sprite/sprite-custom-shader";
+import { enableSprite2DInstanceParams, setSprite2DInstanceParamsIndex } from "../../../packages/babylon-lite/src/sprite/sprite-2d-instance-params";
 import { createGridSpriteAtlas } from "../../../packages/babylon-lite/src/sprite/shared/sprite-atlas";
 import { createSpriteRenderer, registerSpriteRenderer, setSpriteRendererTarget } from "../../../packages/babylon-lite/src/sprite/sprite-renderer";
 import { rebuildRegisteredSpriteRenderers } from "../../../packages/babylon-lite/src/sprite/sprite-recovery";
@@ -157,6 +158,10 @@ describe("SpriteRenderer device-lost recovery", () => {
         });
         const layer = createSprite2DLayer(atlas, { customShader: shader });
         addSprite2DIndex(layer, { positionPx: [10, 20], sizePx: [16, 16], frame: 0 });
+        enableSprite2DInstanceParams(layer);
+        setSprite2DInstanceParamsIndex(layer, 0, [1, 2, 3, 4]);
+        const instanceData = layer._instanceData;
+        const extension = layer._vertexExtension;
         const renderer = createSpriteRenderer(engine, { layers: [layer], clear: false });
         setSpriteRendererTarget(renderer, target);
         registerSpriteRenderer(renderer);
@@ -191,6 +196,11 @@ describe("SpriteRenderer device-lost recovery", () => {
         expect(renderer._targetView).toBe(target.view);
         expect(renderer.layers).toEqual([layer]);
         expect(layer.count).toBe(1);
+        expect(layer._instanceData).toBe(instanceData);
+        expect(layer._vertexExtension).toBe(extension);
+        expect(Array.from(layer._instanceData.slice(13, 17))).toEqual([1, 2, 3, 4]);
+        const createShaderModule = vi.mocked(newProbe.device.createShaderModule);
+        expect(createShaderModule.mock.calls.some(([descriptor]) => descriptor.code.includes("out.instanceParams = in.instanceParams;"))).toBe(true);
         expect(renderer._clear).toBe(false);
         expect(other.touched).toBe(false);
         expect(newProbe.bufferWrites.find((write) => write.label === "sprite-layer-fx-ubo")?.firstFloat).toBeCloseTo(0.05);
@@ -211,23 +221,26 @@ describe("TextRenderer device-lost recovery", () => {
         engine._renderingContexts.unshift(other);
         renderer._update();
 
-        const atlas = storage._curveSets.get("font")!.atlas;
-        const oldAtlasGpu = atlas.gpu!;
+        const atlas = storage._curveSets.get("font")!._atlas;
+        const oldAtlasGpu = atlas._gpu!;
         const oldLayerGpu = renderer._layerGpu.get(layer)!;
-        const oldUniform = oldLayerGpu.textU;
-        const oldInstance = oldLayerGpu.instanceBuf;
+        const oldUniform = oldLayerGpu._textU;
+        const oldInstance = oldLayerGpu._instanceBuf;
+        const oldStyle = oldLayerGpu._styleBuf;
 
         const newProbe = makeDevice();
         engine._device = newProbe.device;
         await rebuildRegisteredTextRenderers(engine);
 
         const rebuiltLayerGpu = renderer._layerGpu.get(layer)!;
-        expect(rebuiltLayerGpu.textU).not.toBe(oldUniform);
-        expect(rebuiltLayerGpu.instanceBuf).not.toBe(oldInstance);
-        expect(rebuiltLayerGpu.uploadedDataVersion).toBe(data._version);
-        expect(rebuiltLayerGpu.pipeline).not.toBeNull();
-        expect(atlas.gpu).not.toBe(oldAtlasGpu);
-        expect(atlas.gpu?.device).toBe(newProbe.device);
+        expect(rebuiltLayerGpu._textU).not.toBe(oldUniform);
+        expect(rebuiltLayerGpu._instanceBuf).not.toBe(oldInstance);
+        expect(rebuiltLayerGpu._styleBuf).not.toBe(oldStyle);
+        expect(rebuiltLayerGpu._uploadedStyleVersion).toBe(data._styleVersion);
+        expect(rebuiltLayerGpu._uploadedDataVersion).toBe(data._version);
+        expect(rebuiltLayerGpu._pipeline).not.toBeNull();
+        expect(atlas._gpu).not.toBe(oldAtlasGpu);
+        expect(atlas._gpu?._device).toBe(newProbe.device);
         expect(renderer.layers).toEqual([layer]);
         expect(layer.data).toBe(data);
         expect(layer.positionPx).toEqual({ x: 12, y: 24 });
@@ -253,7 +266,7 @@ describe("TextRenderer device-lost recovery", () => {
         registerTextRenderer(renderer);
         renderer._update();
 
-        expect(renderer._layerGpu.get(layer)!.bindGroupCache.map((e) => e.curveSetId)).toEqual(["a", "b"]);
+        expect(renderer._layerGpu.get(layer)!._bindGroupCache.map((e) => e._curveSetId)).toEqual(["a", "b"]);
 
         // Drop a curve set *before* recovery runs, so the rebuild — not a later `_update()` —
         // is what has to reconcile the cache with the shorter group list. Truncation in
@@ -263,6 +276,6 @@ describe("TextRenderer device-lost recovery", () => {
         engine._device = makeDevice().device;
         await rebuildRegisteredTextRenderers(engine);
 
-        expect(renderer._layerGpu.get(layer)!.bindGroupCache.map((e) => e.curveSetId)).toEqual(["b"]);
+        expect(renderer._layerGpu.get(layer)!._bindGroupCache.map((e) => e._curveSetId)).toEqual(["b"]);
     });
 });

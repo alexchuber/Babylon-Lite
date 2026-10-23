@@ -7,10 +7,13 @@ import type { Material, MaterialView } from "../material/material.js";
 import type { Mesh } from "../mesh/mesh.js";
 import type { SceneContext } from "../scene/scene-core.js";
 import type { SpotLight } from "../light/spot-light.js";
-import { createRenderTask, type RenderTask } from "../frame-graph/render-task.js";
+import { addMeshToTask, createRenderTask, type RenderTask } from "../frame-graph/render-task.js";
 import { casterVersionSum, createShadowCamera, createShadowRenderTarget, updateShadowCameraBase, writeShadowUboFields } from "./shadow-base.js";
 import type { ShadowGenerator, ShadowTaskInternalState } from "./shadow-generator.js";
 import { packMat4IntoF32 } from "../math/pack-mat4-into-f32.js";
+import { retireGpuResources } from "../engine/gpu-resource-retirement.js";
+import { resolveMeshRebuild } from "../material/resolve-mesh-rebuild.js";
+import { _getShadowTaskCasterMeshes, setShadowTaskCasterMeshes } from "../frame-graph/shadow-inputs.js";
 
 export interface PcfLightMatrix {
     /** @internal */
@@ -29,17 +32,23 @@ export interface PcfTaskState extends ShadowTaskInternalState {
     /** @internal */
     _camera: Camera;
     /** @internal */
-    _cameraVersion: number;
-    /** @internal */
     _lastCasterVersion: number;
     /** @internal */
     _lastLightVersion: number;
     /** @internal Floating-origin offset version (active camera worldMatrixVersion) at last shadow-map render; -1 when never rendered. */
     _lastFoVersion: number;
+    /** @internal Floating-origin camera at last shadow-map render. A replacement camera can report the same version. */
+    _lastFoCamera?: Camera | null;
     /** @internal */
     _shadowUboData: Float32Array;
     /** @internal */
     _casterMeshes: readonly Mesh[];
+    /** @internal Terminal caster material last resolved for each caster mesh. */
+    _casterMaterials: (Material | null)[];
+    /** @internal Generation of each terminal caster material when the task was built. */
+    _casterMatGens: number[];
+    /** @internal Casters the build left out of the task because their view could not be built yet (`holdShadowCaster`). */
+    _held?: Set<Mesh>;
     /** @internal Owning scene — used to read the live floating-origin offset (camera world position). */
     _scene: SceneContext;
 }
@@ -65,10 +74,7 @@ export async function preloadPcfShadowTaskState(casterMeshes: readonly Mesh[]): 
         // `_shadowCasterMaterial` override casts through an alternate material, whose family can differ
         // from the receive material's. Scanning only `mesh.material` would leave that family's factory
         // unimported and the shadow pass would then call an undefined factory.
-        let material = mesh.material;
-        while (material?._shadowCasterMaterial) {
-            material = material._shadowCasterMaterial;
-        }
+        const material = mesh.material ? resolveShadowCasterMaterial(mesh.material) : undefined;
         const family = material?._buildGroup._materialFamily;
         needsStandard ||= family === "standard";
         needsPbr ||= family === "pbr";
@@ -115,13 +121,29 @@ export function ensurePcfShadowTaskState(
 ): PcfTaskState {
     const existing = existingState as PcfTaskState | null;
     if (existing) {
-        if (existing._casterMeshes === casterMeshes) {
+        let changed = existing._casterMeshes !== casterMeshes;
+        for (let i = 0; !changed && i < casterMeshes.length; i++) {
+            const mesh = casterMeshes[i]!;
+            const material = mesh.material;
+            const terminal = material ? resolveShadowCasterMaterial(material) : null;
+            if (existing._casterMaterials[i] !== terminal || existing._casterMatGens[i] !== (terminal?._csmGen ?? 0)) {
+                // A caster the last build held stays out of the task while its view still cannot be built, so an
+                // unresolved hold costs a check per frame and no task.
+                changed = !(material && existing._held?.has(mesh) && holdShadowCaster(scene, sg, material));
+            }
+        }
+        if (!changed) {
             return existing;
         }
-        existing._task.dispose();
+        // The old task's GPU buffers may still be referenced by the frame command buffer that is being
+        // recorded (a caster re-supply lands mid-frame, or during async pre-first-frame construction),
+        // so retire them only after that frame has submitted and drained. Mirrors the CSM hooks.
+        retireGpuResources(engine, existing._task.dispose);
     }
 
     const materialViews = new Map<Material, MaterialView>();
+    const casterMaterials: (Material | null)[] = [];
+    const casterMatGens: number[] = [];
     const camera = createShadowCamera(sg);
     const rt = createShadowRenderTarget(sg);
     const state: PcfTaskState = {
@@ -131,29 +153,103 @@ export function ensurePcfShadowTaskState(
                 rt,
                 clr: true,
                 cam: camera,
+                // The render list is the caster set only: an empty set must not mirror the scene into the map
+                // (the receivers sample this depth texture — see the CSM hooks).
+                autoMirror: false,
                 _skipClusteredLights: true,
             },
             engine,
             scene
         ),
         _camera: camera,
-        _cameraVersion: 0,
         _lastCasterVersion: -1,
         _lastLightVersion: -1,
         _lastFoVersion: -1,
         _shadowUboData: new F32(24),
         _casterMeshes: casterMeshes,
+        _casterMaterials: casterMaterials,
+        _casterMatGens: casterMatGens,
         _scene: scene,
     };
 
     for (const mesh of casterMeshes) {
         const material = mesh.material;
+        // The first build holds too: a caster can switch to another family while the registration preload imports.
+        // A held caster is snapshotted as having no material, so it reads as changed and joins once its hold lifts.
+        if (material && holdShadowCaster(scene, sg, material)) {
+            (state._held ??= new Set()).add(mesh);
+            casterMaterials.push(null);
+            casterMatGens.push(0);
+            continue;
+        }
+        const terminal = material ? resolveShadowCasterMaterial(material) : null;
+        casterMaterials.push(terminal);
+        casterMatGens.push(terminal?._csmGen ?? 0);
         if (material) {
-            state._task.addMesh(mesh, { material: getNoColorView(material, materialViews) });
+            addMeshToTask(state._task, mesh, { material: getNoColorView(material, materialViews) });
         }
     }
 
     return state;
+}
+
+/** @internal Whether the no-colour view of a caster material cannot be built yet, so the caster has to stay out of the
+ *  shadow task for now. When the view factory of the family the caster casts through is not imported, building the view
+ *  would call an undefined factory: this re-supplies the generator's registered caster set through
+ *  `setShadowTaskCasterMeshes`, which parks the generator while the factory imports, as any re-supplied set does. A caster
+ *  casting through its own material also waits while that material's group is not built in this scene, or recording the
+ *  view would throw inside the frame: the mesh's swap drain or runtime build builds it. A build that fails reports its own
+ *  error, and the hold lasts until the caster's material is reassigned or the caster leaves the set. A
+ *  `setShadowCasterMaterial` override does not wait for its group, since nothing in the caster's lifecycle builds it:
+ *  recording it throws as before, naming the problem. Shared by the PCF and CSM hooks. */
+export function holdShadowCaster(scene: SceneContext, sg: ShadowGenerator, material: Material): boolean {
+    const terminal = resolveShadowCasterMaterial(material);
+    if (!hasNoColorViewFactory(terminal)) {
+        // The registered set, not the hooks' argument: a deformable-caster wrapper hands the hooks substitute meshes. One
+        // preload covers every family of the set, and it parks the generator synchronously, so later casters skip it.
+        const registered = _getShadowTaskCasterMeshes(sg);
+        if (registered && !sg._preloadPending) {
+            setShadowTaskCasterMeshes(sg, registered);
+        }
+        return true;
+    }
+    return terminal === material && !resolveMeshRebuild(scene, terminal._buildGroup);
+}
+
+/** @internal Resolve the terminal material used by the shadow caster view. */
+export function resolveShadowCasterMaterial(material: Material): Material {
+    let terminal = material;
+    while (terminal._shadowCasterMaterial) {
+        terminal = terminal._shadowCasterMaterial;
+    }
+    return terminal;
+}
+
+/** @internal Record the terminal caster identity and generation for invalidation checks. */
+export function snapshotShadowCasterMaterial(material: Material, terminals: Map<Material, Material>, generations: Map<Material, number | undefined>): void {
+    const terminal = resolveShadowCasterMaterial(material);
+    terminals.set(material, terminal);
+    generations.set(material, terminal._csmGen);
+}
+
+/** @internal Whether an override changed, was cleared, or its terminal material was rebuilt. A material missing from the
+ *  snapshot counts as changed too: the snapshot cannot vouch for a view that was never built for it. */
+export function shadowCasterMaterialChanged(material: Material, terminals: Map<Material, Material>, generations: Map<Material, number | undefined>): boolean {
+    const terminal = resolveShadowCasterMaterial(material);
+    return terminals.get(material) !== terminal || generations.get(material) !== terminal._csmGen;
+}
+
+/** Whether `getNoColorView` can build the view of a terminal caster material now: the no-colour view factory of its family
+ *  has been imported. A family without a factory builds no view, so it needs none. */
+function hasNoColorViewFactory(terminal: Material): boolean {
+    const family = terminal._buildGroup._materialFamily;
+    return !!(family === "standard"
+        ? createStandardNoColorMaterialView
+        : family === "pbr"
+          ? createPbrNoColorMaterialView
+          : family === "node"
+            ? createNodeNoColorMaterialView
+            : family !== "shader" || createShaderNoColorMaterialView);
 }
 
 export function renderPcfShadowMap(
@@ -164,7 +260,7 @@ export function renderPcfShadowMap(
 ): number {
     const casterMeshes = state._casterMeshes;
     const casterVersion = casterVersionSum(casterMeshes);
-    const lightVersion = sg._light.worldMatrixVersion;
+    const lightVersion = sg._light._lightVersion;
     // Floating-origin offset = active camera world position (mirrors the mesh-world packer
     // and lights UBO). When the camera moves the offset changes, so every eye-relative GPU
     // matrix shifts even if light/casters are static — fold its version into the dirty check.
@@ -173,12 +269,13 @@ export function renderPcfShadowMap(
     const offX = foCam ? foCam.worldMatrix[12]! : 0;
     const offY = foCam ? foCam.worldMatrix[13]! : 0;
     const offZ = foCam ? foCam.worldMatrix[14]! : 0;
-    if (!sg._config._forceRefreshEveryFrame && casterVersion === state._lastCasterVersion && lightVersion === state._lastLightVersion && foVersion === state._lastFoVersion) {
+    const foChanged = foVersion !== state._lastFoVersion || foCam !== state._lastFoCamera;
+    if (!sg._config._forceRefreshEveryFrame && casterVersion === state._lastCasterVersion && lightVersion === state._lastLightVersion && !foChanged) {
         return 0;
     }
 
     const matrix = computeLightMatrix(casterMeshes, offX, offY, offZ);
-    const matrixChanged = sg._light.lightType === "directional" || lightVersion !== state._lastLightVersion || foVersion !== state._lastFoVersion;
+    const matrixChanged = sg._light.lightType === "directional" || lightVersion !== state._lastLightVersion || foChanged;
     if (matrixChanged) {
         packMat4IntoF32(sg._lightMatrix, matrix._viewProj, 0);
         sg._version++;
@@ -190,13 +287,14 @@ export function renderPcfShadowMap(
     state._lastCasterVersion = casterVersion;
     state._lastLightVersion = lightVersion;
     state._lastFoVersion = foVersion;
+    state._lastFoCamera = foCam;
     return state._task.execute?.() ?? 0;
 }
 
 function updateShadowCamera(state: PcfTaskState, sg: ShadowGenerator, matrix: PcfLightMatrix): void {
-    state._cameraVersion++;
-    state._camera.fov = sg._light.lightType === "spot" ? (sg._light as SpotLight).angle : 1;
-    updateShadowCameraBase(state._camera, state._cameraVersion, matrix._near, matrix._far, matrix._view, biasViewProjection(matrix._viewProj, sg._config._bias));
+    const camera = state._camera;
+    camera.fov = sg._light.lightType === "spot" ? (sg._light as SpotLight).angle : 1;
+    updateShadowCameraBase(camera, camera.worldMatrixVersion + 1, matrix._near, matrix._far, matrix._view, biasViewProjection(matrix._viewProj, sg._config._bias));
 }
 
 function biasViewProjection(viewProj: Float32Array, bias: number): Float32Array {

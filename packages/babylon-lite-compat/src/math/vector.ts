@@ -7,7 +7,11 @@
  * `asArray()`.
  */
 
+import { normalizeVec2ToRef, projectPointToViewportToRef } from "babylon-lite";
+import type { Mat4 } from "babylon-lite";
+
 import type { Matrix } from "./matrix.js";
+import type { Viewport } from "./size.js";
 
 export class Vector2 {
     public constructor(
@@ -66,12 +70,11 @@ export class Vector2 {
     }
 
     public normalize(): this {
-        const len = this.length();
-        if (len !== 0) {
-            this.x /= len;
-            this.y /= len;
-        }
-        return this;
+        return this.normalizeToRef(this);
+    }
+
+    public normalizeToRef<T extends { x: number; y: number }>(result: T): T {
+        return normalizeVec2ToRef(this, result);
     }
 
     public clone(): Vector2 {
@@ -364,6 +367,16 @@ export class Vector3 {
 
     public static Maximize(a: Vector3, b: Vector3): Vector3 {
         return a.clone().maximizeInPlace(b);
+    }
+
+    /** Project a world-space point into a Babylon.js viewport. */
+    public static Project(vector: Vector3, world: Matrix, transform: Matrix, viewport: Viewport): Vector3 {
+        return Vector3.ProjectToRef(vector, world, transform, viewport, new Vector3());
+    }
+
+    /** Project a world-space point into a Babylon.js viewport, writing into `result`. */
+    public static ProjectToRef<T extends Vector3>(vector: Vector3, world: Matrix, transform: Matrix, viewport: Viewport, result: T): T {
+        return projectPointToViewportToRef(vector, world.m as unknown as Mat4, transform.m as unknown as Mat4, viewport, result);
     }
 
     /** Transform a coordinate (point) by a matrix using the row-vector convention. */

@@ -12,8 +12,8 @@ import type { Texture2D } from "../texture/texture-2d.js";
 import type { PbrMaterialProps } from "../material/pbr/pbr-material.js";
 import type { Mesh, MeshGPU } from "../mesh/mesh.js";
 import { initMeshTransform } from "../mesh/mesh.js";
-import { getOrCreateSampler } from "../resource/gpu-pool.js";
-import { createMappedBuffer } from "../resource/gpu-buffers.js";
+import { getOrCreateSampler } from "../resource/texture-sampler-pool.js";
+import { createMappedBuffer } from "../resource/mapped-buffer.js";
 import { resolveAccessor, buildParentMap, computeNodeWorldMatrix, anyPrimitive, needsOrmComposite, TYPE_SIZES } from "./gltf-parser.js";
 import type { AccessorView } from "./gltf-parser.js";
 import type { GltfVb } from "./gltf-interleave.js";
@@ -239,9 +239,9 @@ export async function loadGltf(engine: EngineContext, source: string | ArrayBuff
         Object.assign(container, rest);
         if (_sceneSetup) {
             const prev = container._sceneSetup;
-            container._sceneSetup = (scene) => {
-                prev?.(scene);
-                _sceneSetup(scene);
+            container._sceneSetup = (scene, target) => {
+                prev?.(scene, target);
+                _sceneSetup(scene, target);
             };
         }
     }
@@ -620,7 +620,7 @@ async function uploadMeshes(meshDatas: GltfMeshData[], features: GltfFeature[], 
                 let props: PbrMaterialProps;
                 if (_needsPbrExt) {
                     const extMod = await _ensurePbrExt();
-                    const tex = extMod.buildDefaultPbrTexturesExt(engine, mat, sampler, _generateMipmaps!, getCachedTexture, wrapTex, samplerFor);
+                    const tex = extMod.buildDefaultPbrTexturesExt(engine, mat, sampler, _generateMipmaps!, getCachedTexture, wrapTex, extLayers, samplerFor);
                     props = extMod.assemblePbrPropsExt(mat, tex, extLayers);
                     // UV-transform is opt-in; the gate and its conditional import live in the ext
                     // module so the import plumbing is not emitted into this file, which every
@@ -629,8 +629,8 @@ async function uploadMeshes(meshDatas: GltfMeshData[], features: GltfFeature[], 
                     await extMod.applyGltfUvTransform(props, tex);
                 } else {
                     const tex = buildSampledPbrTextures
-                        ? buildSampledPbrTextures(engine, mat, sampler, _generateMipmaps!, samplerFor!, getCachedTexture)
-                        : buildDefaultPbrTextures(engine, mat, sampler, _generateMipmaps!, getCachedTexture);
+                        ? buildSampledPbrTextures(engine, mat, sampler, _generateMipmaps!, samplerFor!, getCachedTexture, extLayers)
+                        : buildDefaultPbrTextures(engine, mat, sampler, _generateMipmaps!, getCachedTexture, extLayers);
                     props = assemblePbrProps(mat, tex.baseColorTexture, tex.ormTexture, tex.normalTexture, tex.emissiveTexture, extLayers);
                 }
                 // Opt-in PBR features decided from the glTF material data (emissive,

@@ -27,14 +27,15 @@
 // TAA pay nothing.
 
 import { F32 } from "../engine/typed-arrays.js";
-import { _cameraChangeKey } from "../camera/camera.js";
+import { _cameraChangeKey, type Camera } from "../camera/camera.js";
 import type { EngineContext } from "../engine/engine.js";
 import type { RenderTarget } from "../engine/render-target.js";
-import { buildRenderTarget, createRenderTarget, disposeRenderTarget } from "../engine/render-target.js";
+import { _resolveRenderTargetSize, buildRenderTarget, createRenderTarget, disposeRenderTarget } from "../engine/render-target.js";
 import { createPostProcessTask, type PostProcessTask, type PostProcessTaskSettings } from "../frame-graph/post-process-task.js";
 import type { RenderTask } from "../frame-graph/render-task.js";
 import type { Task } from "../frame-graph/task.js";
 import type { SceneContext } from "../scene/scene-core.js";
+import { wgsl } from "../shader/wgsl.js";
 
 /** Configuration for `createTaaPostProcessTask`. */
 export interface TaaPostProcessTaskConfig extends PostProcessTaskSettings {
@@ -80,19 +81,21 @@ interface TaaTaskInternal extends TaaPostProcessTask {
     _jitterScratch: Float32Array;
     _firstUpdate: boolean;
     _lastCamVer: number;
+    /** Camera seen last frame; replacing it is a camera move even when the versions match. */
+    _lastCam?: Camera | null;
     _factor: number;
 }
 
-const TAA_HISTORY_TEXTURE_WGSL = `@group(0) @binding(2) var taaHistory:texture_2d<f32>;`;
+const TAA_HISTORY_TEXTURE_WGSL = wgsl`@group(0) @binding(2) var taaHistory:texture_2d<f32>;`;
 
-const TAA_UNIFORM_WGSL = `struct TaaParams{factor:f32,p0:f32,p1:f32,p2:f32}
+const TAA_UNIFORM_WGSL = wgsl`struct TaaParams{factor:f32,p0:f32,p1:f32,p2:f32}
 @group(0) @binding(3) var<uniform> taaParams:TaaParams;`;
 
 // mix(history, current, factor): factor=1 -> current only (first frame / reset).
-const TAA_FRAGMENT_WGSL = `fn applyPostProcess(color:vec4f, uv:vec2f)->vec4f{let h=textureSample(taaHistory,sourceSampler,uv);return mix(h,color,taaParams.factor);}`;
+const TAA_FRAGMENT_WGSL = wgsl`fn applyPostProcess(color:vec4f, uv:vec2f)->vec4f{let h=textureSample(taaHistory,sourceSampler,uv);return mix(h,color,taaParams.factor);}`;
 
 // Identity passthrough used by the present + history-update copies.
-const TAA_COPY_FRAGMENT_WGSL = `fn applyPostProcess(color:vec4f, uv:vec2f)->vec4f{return color;}`;
+const TAA_COPY_FRAGMENT_WGSL = wgsl`fn applyPostProcess(color:vec4f, uv:vec2f)->vec4f{return color;}`;
 
 /**
  * Create a Temporal Anti-Aliasing post-process task.
@@ -201,10 +204,13 @@ export function createTaaPostProcessTask(config: TaaPostProcessTaskConfig, engin
             task._lastCamVer = -1;
         },
         execute(): number {
-            const cam = task._sourceRenderTask.scene.camera;
+            // The camera the source pass actually renders: an explicit `cam` override wins over the scene camera.
+            const src = task._sourceRenderTask;
+            const cam = src._config.cam ?? src.scene.camera;
             const camVer = cam ? _cameraChangeKey(cam) : 0;
-            const moved = camVer !== task._lastCamVer;
+            const moved = camVer !== task._lastCamVer || cam !== task._lastCam;
             task._lastCamVer = camVer;
+            task._lastCam = cam;
 
             // factor=1 on the first frame and on camera-move reset: take the current
             // (un-jittered) frame verbatim, discarding stale history.
@@ -266,11 +272,7 @@ function resolveSourceSize(source: RenderTarget): { width: number; height: numbe
     if (source._width > 0 && source._height > 0) {
         return { width: source._width, height: source._height };
     }
-    const size = source._descriptor.size;
-    if ("canvas" in size) {
-        return { width: size.canvas.width, height: size.canvas.height };
-    }
-    return { width: size.width, height: size.height };
+    return _resolveRenderTargetSize(source._descriptor);
 }
 
 /** Generate `samples` 2D Halton offsets (base 2 / base 3) centered on [-0.5, 0.5). */

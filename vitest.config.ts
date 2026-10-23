@@ -1,8 +1,16 @@
 import { defineConfig } from "vitest/config";
+import { resolve } from "node:path";
 
 export default defineConfig({
+    resolve: {
+        alias: {
+            "babylon-lite/shader/wgsl.js": resolve(__dirname, "packages/babylon-lite/src/shader/wgsl.ts"),
+        },
+    },
     test: {
         environment: "node",
+        // Preserve Vitest 4's mock lifecycle; individual suites own their cleanup.
+        clearMocks: false,
         setupFiles: ["./tests/lite/unit/setup-webgpu-globals.ts"],
         reporters: process.env.CI ? ["default", "junit"] : ["default"],
         outputFile: {
@@ -14,6 +22,16 @@ export default defineConfig({
                 test: {
                     name: "unit",
                     include: ["tests/lite/unit/**/*.test.ts"],
+                },
+            },
+            {
+                // Node-hosted integration tests (deterministic fake transports/clocks,
+                // no browser/WebGPU). Longer timeout for multi-step protocol flows.
+                extends: true,
+                test: {
+                    name: "lite-integration",
+                    include: ["tests/lite/integration/**/*.test.ts"],
+                    testTimeout: 120_000,
                 },
             },
             {

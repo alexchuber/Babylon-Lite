@@ -14,18 +14,32 @@
  * scene flips to shadow-aware registration when any generator is present.
  */
 
-import { createEsmDirectionalShadowGenerator, createPcfDirectionalShadowGenerator, createPcfSpotlightShadowGenerator, setShadowTaskCasterMeshes } from "babylon-lite";
+import {
+    createCsmDirectionalShadowGenerator,
+    createEsmDirectionalShadowGenerator,
+    createPcfDirectionalShadowGenerator,
+    createPcfSpotlightShadowGenerator,
+    setShadowTaskCasterMeshes,
+} from "babylon-lite";
 import type { EngineContext, Mesh as LiteMesh } from "babylon-lite";
 
-import type { Light } from "../lights/lights.js";
+import { DirectionalLight, type Light } from "../lights/lights.js";
 import type { AbstractMesh } from "../meshes/meshes.js";
+import type { ObserverCallback } from "../misc/observable.js";
+import type { Node } from "../node/node.js";
+
+type LiteShadowGenerator = ReturnType<typeof createEsmDirectionalShadowGenerator>;
 
 export class ShadowGenerator {
     private readonly _mapSize: number;
     private readonly _light: Light;
     private readonly _casters: AbstractMesh[] = [];
+    private readonly _casterDisposeObservers = new Map<LiteMesh, { caster: AbstractMesh; observer: ObserverCallback<Node> }>();
+    private _casterSyncScheduled = false;
+    private _casterSyncDirty = false;
+    private readonly _disposeBeforeRenderFlush: (() => void) | undefined = undefined;
     /** @internal The built Lite shadow generator (set in `_build`). Used to wire NME receivers. */
-    public _liteGen: unknown;
+    public _liteGen: LiteShadowGenerator | undefined;
 
     public getClassName(): string {
         return "ShadowGenerator";
@@ -58,27 +72,115 @@ export class ShadowGenerator {
     public constructor(mapSize: number, light: Light) {
         this._mapSize = mapSize;
         this._light = light;
+        light._shadowGenerator = this;
         const scene = light.getScene();
         if (scene) {
             scene._registerShadowGenerator(this);
+            this._disposeBeforeRenderFlush = scene._registerBeforeRenderFlush(() => this._flushCasterSync());
         }
     }
 
     /** Babylon.js `addShadowCaster(mesh, includeDescendants?)`. */
-    public addShadowCaster(mesh: AbstractMesh, _includeDescendants = true): ShadowGenerator {
-        if (!this._casters.includes(mesh)) {
-            this._casters.push(mesh);
+    public addShadowCaster(mesh: AbstractMesh, includeDescendants = true): ShadowGenerator {
+        let changed = false;
+        for (const caster of this._casterTree(mesh, includeDescendants)) {
+            if (!this._casters.some((existing) => existing._lite === caster._lite)) {
+                this._casters.push(caster);
+                this._detachCasterDisposeObserver(caster._lite);
+                const observer: ObserverCallback<Node> = () => this._removeCaster(caster._lite, true, observer);
+                caster.onDisposeObservable.add(observer);
+                this._casterDisposeObservers.set(caster._lite, { caster, observer });
+                changed = true;
+            }
+        }
+        if (changed) {
+            this._scheduleCasterSync();
         }
         return this;
     }
 
-    /** Babylon.js `removeShadowCaster(mesh)`. */
-    public removeShadowCaster(mesh: AbstractMesh): ShadowGenerator {
-        const i = this._casters.indexOf(mesh);
-        if (i >= 0) {
-            this._casters.splice(i, 1);
+    /** Babylon.js `removeShadowCaster(mesh, includeDescendants?)`. */
+    public removeShadowCaster(mesh: AbstractMesh, includeDescendants = true): ShadowGenerator {
+        let changed = false;
+        for (const caster of this._casterTree(mesh, includeDescendants)) {
+            changed = this._removeCaster(caster._lite, false) || changed;
+        }
+        if (changed) {
+            this._scheduleCasterSync();
         }
         return this;
+    }
+
+    private _casterTree(mesh: AbstractMesh, includeDescendants: boolean): AbstractMesh[] {
+        return includeDescendants ? [mesh, ...(mesh.getChildMeshes() as AbstractMesh[])] : [mesh];
+    }
+
+    private _detachCasterDisposeObserver(liteMesh: LiteMesh): void {
+        const registration = this._casterDisposeObservers.get(liteMesh);
+        if (registration) {
+            registration.caster.onDisposeObservable.remove(registration.observer);
+            this._casterDisposeObservers.delete(liteMesh);
+        }
+    }
+
+    private _removeCaster(liteMesh: LiteMesh, scheduleSync = true, expectedObserver?: ObserverCallback<Node>): boolean {
+        const registration = this._casterDisposeObservers.get(liteMesh);
+        if (expectedObserver && registration?.observer !== expectedObserver) {
+            return false;
+        }
+
+        const index = this._casters.findIndex((existing) => existing._lite === liteMesh);
+        const changed = index !== -1;
+        if (changed) {
+            this._casters.splice(index, 1);
+        }
+        this._detachCasterDisposeObserver(liteMesh);
+        if (changed && scheduleSync) {
+            this._scheduleCasterSync();
+        }
+        return changed;
+    }
+
+    private _scheduleCasterSync(): void {
+        if (!this._liteGen) {
+            return;
+        }
+        this._casterSyncDirty = true;
+        if (this._casterSyncScheduled) {
+            return;
+        }
+        this._casterSyncScheduled = true;
+        queueMicrotask(() => {
+            this._casterSyncScheduled = false;
+            this._flushCasterSync();
+        });
+    }
+
+    private _flushCasterSync(): void {
+        if (!this._casterSyncDirty || !this._liteGen) {
+            return;
+        }
+        this._casterSyncDirty = false;
+        setShadowTaskCasterMeshes(this._liteGen, this._liteCasterMeshes());
+    }
+
+    /**
+     * The Lite meshes handed to the native shadow task: every requested caster that carries GPU geometry.
+     * The compat loader wraps a model's complete hierarchy as `Mesh`es, so `addShadowCaster(root, true)`
+     * legitimately collects transform-only roots and intermediate nodes into `renderList`, exactly as
+     * Babylon.js does. Those nodes must not reach the native state: the render task cannot build a
+     * renderable for a mesh without `_gpu` (it would throw inside the frame, every frame), and directional
+     * fitting would substitute default bounds for it, distorting the shadow volume.
+     */
+    private _liteCasterMeshes(): LiteMesh[] {
+        const meshes: LiteMesh[] = [];
+        for (const caster of this._casters) {
+            const lite = caster._lite as LiteMesh;
+            if ((lite as { _gpu?: unknown })._gpu) {
+                meshes.push(lite);
+            }
+        }
+        return meshes;
     }
 
     /** Babylon.js `getShadowMap()` — returns a minimal render-list holder for parity. */
@@ -99,7 +201,19 @@ export class ShadowGenerator {
     }
 
     public dispose(): void {
+        this._disposeBeforeRenderFlush?.();
+        this._light.getScene()?._unregisterShadowGenerator(this);
+        for (const { caster, observer } of this._casterDisposeObservers.values()) {
+            caster.onDisposeObservable.remove(observer);
+        }
+        this._casterDisposeObservers.clear();
+        this._casterSyncScheduled = false;
+        this._casterSyncDirty = false;
+        this._liteGen = undefined;
         this._light._lite.shadowGenerator = undefined;
+        if (this._light._shadowGenerator === this) {
+            this._light._shadowGenerator = null;
+        }
     }
 
     /**
@@ -112,7 +226,19 @@ export class ShadowGenerator {
         const usePcf = this.usePercentageCloserFiltering || this.useContactHardeningShadow || this.usePoissonSampling;
 
         let liteGen;
-        if (className === "SpotLight") {
+        if (this instanceof CascadedShadowGenerator) {
+            liteGen = createCsmDirectionalShadowGenerator(engine, liteLight, {
+                mapSize: this._mapSize,
+                numCascades: this.numCascades,
+                lambda: this.lambda,
+                cascadeBlendPercentage: this.cascadeBlendPercentage,
+                stabilizeCascades: this.stabilizeCascades,
+                shadowMaxZ: this.shadowMaxZ,
+                bias: this.bias,
+                darkness: this.darkness,
+                frustumEdgeFalloff: this.frustumEdgeFalloff,
+            });
+        } else if (className === "SpotLight") {
             // Lite has only a PCF spot generator.
             liteGen = createPcfSpotlightShadowGenerator(engine, liteLight, {
                 mapSize: this._mapSize,
@@ -146,23 +272,35 @@ export class ShadowGenerator {
 
         (liteLight as { shadowGenerator?: unknown }).shadowGenerator = liteGen;
         this._liteGen = liteGen;
-        const casterMeshes = this._casters.map((m) => m._lite as LiteMesh);
-        setShadowTaskCasterMeshes(liteGen, casterMeshes);
+        this._casterSyncDirty = false;
+        setShadowTaskCasterMeshes(liteGen, this._liteCasterMeshes());
     }
 }
 
-/**
- * Babylon.js `CascadedShadowGenerator` — cascaded shadow maps for large directional
- * scenes. Mapped onto Babylon Lite's CSM generator is a larger task; for now this
- * extends {@link ShadowGenerator} and falls back to the standard directional path,
- * which renders (a single cascade's worth of) shadows rather than throwing.
- */
+/** Babylon.js `CascadedShadowGenerator` backed by Lite's native CSM generator. */
 export class CascadedShadowGenerator extends ShadowGenerator {
-    public numCascades = 4;
+    private _numCascades = 4;
     public lambda = 0.5;
+    public cascadeBlendPercentage = 0.1;
     public stabilizeCascades = false;
+    public shadowMaxZ: number | undefined;
     public depthClamp = true;
     public autoCalcDepthBounds = false;
+
+    public constructor(mapSize: number, light: DirectionalLight) {
+        if (!(light instanceof DirectionalLight)) {
+            throw new TypeError("CascadedShadowGenerator requires a DirectionalLight");
+        }
+        super(mapSize, light);
+    }
+
+    public get numCascades(): number {
+        return this._numCascades;
+    }
+
+    public set numCascades(value: number) {
+        this._numCascades = Math.min(Math.max(value, 2), 4);
+    }
 
     public override getClassName(): string {
         return "CascadedShadowGenerator";

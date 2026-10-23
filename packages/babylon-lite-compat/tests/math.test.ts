@@ -7,6 +7,9 @@ import { Quaternion } from "../src/math/quaternion";
 import { Matrix } from "../src/math/matrix";
 import { Scalar } from "../src/math/scalar";
 import { Axis, Space } from "../src/math/constants";
+import { Polar } from "../src/math/polar";
+import { Spherical } from "../src/math/spherical";
+import { Viewport } from "../src/math/size";
 
 describe("Vector3", () => {
     it("adds, subtracts, and scales", () => {
@@ -90,6 +93,23 @@ describe("Vector3", () => {
         expect(Vector3.TransformNormalToRef(new Vector3(1, 0, 0), translation, ref)).toBe(ref);
         expect(ref.asArray()).toEqual([1, 0, 0]);
     });
+
+    it("projects through Lite's world-to-screen helper with Babylon.js viewport coordinates", () => {
+        const viewport = new Viewport(100, 50, 400, 200);
+        const result = new Vector3();
+
+        expect(Vector3.ProjectToRef(Vector3.Zero(), Matrix.Identity(), Matrix.Identity(), viewport, result)).toBe(result);
+        expect(result.asArray()).toEqual([300, 150, 0]);
+        expect(Vector3.Project(new Vector3(1, 1, 0.5), Matrix.Identity(), Matrix.Identity(), viewport).asArray()).toEqual([500, 50, 0.5]);
+        expect(Vector3.Project(Vector3.Zero(), Matrix.Translation(1, 0, 0), Matrix.Scaling(2, 1, 1), new Viewport(0, 0, 100, 100)).asArray()).toEqual([150, 50, 0]);
+        expect(Vector3.Project(Vector3.Zero(), Matrix.Identity(), Matrix.Identity(), new Viewport(7, 9, 0, 0)).asArray()).toEqual([7, 9, 0]);
+    });
+
+    it("sets matrix translation through the Lite helper", () => {
+        const matrix = Matrix.Identity();
+        expect(matrix.setTranslationFromFloats(4, 5, 6)).toBe(matrix);
+        expect([matrix.m[12], matrix.m[13], matrix.m[14]]).toEqual([4, 5, 6]);
+    });
 });
 
 describe("liteBackedVector3 (write-through transform proxy)", () => {
@@ -118,6 +138,16 @@ describe("Vector2 / Vector4", () => {
     it("supports basic ops", () => {
         expect(new Vector2(3, 4).length()).toBe(5);
         expect(new Vector4(1, 2, 3, 4).asArray()).toEqual([1, 2, 3, 4]);
+    });
+
+    it("normalizes to a reference without changing zero or unit vectors", () => {
+        const ref = new Vector2(9, 9);
+        expect(new Vector2(3, 4).normalizeToRef(ref)).toBe(ref);
+        expect(ref.asArray()).toEqual([0.6, 0.8]);
+        expect(Vector2.Zero().normalizeToRef(ref)).toBe(ref);
+        expect(ref.asArray()).toEqual([0, 0]);
+        expect(new Vector2(0, -1).normalizeToRef(ref)).toBe(ref);
+        expect(ref.asArray()).toEqual([0, -1]);
     });
 });
 
@@ -221,6 +251,87 @@ describe("Matrix", () => {
         expect(m.decompose(undefined, rot, undefined)).toBe(false);
         expect(rot.asArray()).toEqual([0, 0, 0, 1]);
     });
+
+    it("maximizes every element in place", () => {
+        const matrix = Matrix.FromArray(Array.from({ length: 16 }, (_, index) => index - 8));
+        const other = Matrix.FromArray(Array.from({ length: 16 }, (_, index) => 4 - index));
+        expect(matrix.maximizeInPlace(other)).toBe(matrix);
+        expect(matrix.toArray()).toEqual(Array.from({ length: 16 }, (_, index) => Math.max(index - 8, 4 - index)));
+
+        expect(matrix.maximizeInPlaceFromFloats(...([20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 20] as const))).toBe(matrix);
+        expect(matrix.m[0]).toBe(20);
+        expect(matrix.m[15]).toBe(20);
+
+        const second = Matrix.FromArray(Array(16).fill(-1));
+        second.maximizeInPlaceFromFloats(...([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] as const));
+        expect(second.toArray()).toEqual(Array.from({ length: 16 }, (_, index) => index));
+    });
+
+    it("builds BJS handedness-correct look-direction matrices", () => {
+        const forward = new Vector3(1, 0, 0);
+        const up = Vector3.Up();
+        const lh = Matrix.LookDirectionLH(forward, up);
+        const rh = Matrix.LookDirectionRH(forward, up);
+
+        expect(Vector3.TransformNormal(Vector3.Forward(), lh).asArray()).toEqual([1, 0, 0]);
+        expect(Vector3.TransformNormal(new Vector3(0, 0, -1), rh).asArray()).toEqual([1, 0, 0]);
+
+        const result = Matrix.Translation(7, 8, 9);
+        expect(Matrix.LookDirectionLHToRef(Vector3.Forward(), up, result)).toBe(result);
+        expect(result.toArray()).toEqual(
+            Matrix.Identity()
+                .toArray()
+                .map((value) => expect.closeTo(value))
+        );
+        expect(Matrix.LookDirectionRHToRef(new Vector3(0, 0, -1), up, result)).toBe(result);
+        expect(result.toArray()).toEqual(
+            Matrix.Identity()
+                .toArray()
+                .map((value) => expect.closeTo(value))
+        );
+    });
+});
+
+describe("Polar", () => {
+    it("converts vectors with atan2 quadrant semantics", () => {
+        const polar = Polar.FromVector2(new Vector2(-1, -1));
+        expect(polar.radius).toBeCloseTo(Math.SQRT2);
+        expect(polar.theta).toBeCloseTo((-3 * Math.PI) / 4);
+        expect(polar.toVector2().x).toBeCloseTo(-1);
+        expect(polar.toVector2().y).toBeCloseTo(-1);
+    });
+
+    describe("Spherical", () => {
+        it("round-trips vectors using Babylon.js spherical conventions", () => {
+            const spherical = Spherical.FromVector3(new Vector3(-1, 2, -3));
+            const vector = spherical.toVector3();
+
+            expect(spherical.radius).toBeCloseTo(Math.sqrt(14));
+            expect(spherical.theta).toBeCloseTo(Math.acos(2 / Math.sqrt(14)));
+            expect(spherical.phi).toBeCloseTo(Math.atan2(-3, -1));
+            expect(vector.x).toBeCloseTo(-1);
+            expect(vector.y).toBeCloseTo(2);
+            expect(vector.z).toBeCloseTo(-3);
+        });
+
+        it("supports the Babylon.js component-wise value operations", () => {
+            const value = new Spherical(2, 3, 4);
+            expect(value.add(new Spherical(4, 5, 6)).asArray()).toEqual([6, 8, 10]);
+            expect(value.subtractFromFloats(1, 2, 3).asArray()).toEqual([1, 1, 1]);
+            expect(value.multiply(new Spherical(3, 4, 5)).asArray()).toEqual([6, 12, 20]);
+            expect(value.divide(new Spherical(2, 3, 4)).asArray()).toEqual([1, 1, 1]);
+            expect(value.scale(2).asArray()).toEqual([4, 6, 8]);
+        });
+    });
+
+    it("supports the Babylon.js component-wise value operations", () => {
+        const value = new Polar(2, 3);
+        expect(value.add(new Polar(4, 5)).asArray()).toEqual([6, 8]);
+        expect(value.subtractFromFloats(1, 2).asArray()).toEqual([1, 1]);
+        expect(value.multiply(new Polar(3, 4)).asArray()).toEqual([6, 12]);
+        expect(value.divide(new Polar(2, 3)).asArray()).toEqual([1, 1]);
+        expect(value.scale(2).asArray()).toEqual([4, 6]);
+    });
 });
 
 describe("Quaternion", () => {
@@ -300,6 +411,27 @@ describe("Quaternion", () => {
         const returned = Quaternion.FromRotationMatrixToRef(rotMat, toRef);
         expect(returned).toBe(toRef);
         expect(inPlace.asArray()).toEqual(toRef.asArray());
+    });
+
+    it("builds BJS handedness-correct look-direction quaternions", () => {
+        const forward = new Vector3(1, 0, 0);
+        const up = Vector3.Up();
+        const lh = Quaternion.FromLookDirectionLH(forward, up);
+        const rh = Quaternion.FromLookDirectionRH(forward, up);
+
+        const lhForward = Vector3.TransformNormal(Vector3.Forward(), Matrix.Compose(new Vector3(1, 1, 1), lh, Vector3.Zero()));
+        const rhForward = Vector3.TransformNormal(new Vector3(0, 0, -1), Matrix.Compose(new Vector3(1, 1, 1), rh, Vector3.Zero()));
+        for (const transformed of [lhForward, rhForward]) {
+            expect(transformed.x).toBeCloseTo(1);
+            expect(transformed.y).toBeCloseTo(0);
+            expect(transformed.z).toBeCloseTo(0);
+        }
+
+        const result = new Quaternion(7, 8, 9, 10);
+        expect(Quaternion.FromLookDirectionLHToRef(Vector3.Forward(), up, result)).toBe(result);
+        expect(result.asArray()).toEqual([expect.closeTo(0), expect.closeTo(0), expect.closeTo(0), expect.closeTo(1)]);
+        expect(Quaternion.FromLookDirectionRHToRef(new Vector3(0, 0, -1), up, result)).toBe(result);
+        expect(result.asArray()).toEqual([expect.closeTo(0), expect.closeTo(0), expect.closeTo(0), expect.closeTo(1)]);
     });
 });
 

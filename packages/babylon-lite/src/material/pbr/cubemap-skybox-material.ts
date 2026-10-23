@@ -5,7 +5,7 @@ import { SS } from "../../engine/gpu-flags.js";
 import type { EngineContext } from "../../engine/engine.js";
 import type { RenderTargetSignature } from "../../engine/render-target.js";
 import { createDefaultPipelineDescriptor, getSceneBindGroupLayout } from "../../render/scene-helpers.js";
-import { targetSignatureKey } from "../../engine/render-target.js";
+import { targetSignatureKey } from "../../engine/render-target-signature.js";
 
 const SKYBOX_POS_BUFFER: GPUVertexBufferLayout[] = [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" as GPUVertexFormat }] }];
 
@@ -15,7 +15,7 @@ export interface CubemapSkyboxMaterial {
 }
 
 /** Module-global pipeline + layout caches shared across all cubemap-skybox instances.
- *  Keyed by `${label}|${sigKey}` so HDR and DDS variants don't collide. */
+ *  Pipeline keys include final fragment code so composed variants don't collide. */
 const _cmPipelines = new Map<string, GPURenderPipeline>();
 const _cmLayouts = new Map<string, GPUBindGroupLayout>();
 let _cmCachedDevice: GPUDevice | null = null;
@@ -52,7 +52,7 @@ export function createCubemapSkyboxMaterial(label: string, vertCode: string, fra
                 _cmLayouts.clear();
                 _cmCachedDevice = device;
             }
-            const key = `${label}|${targetSignatureKey(sig)}`;
+            const key = `${fragCode}|${targetSignatureKey(sig)}`;
             const cached = _cmPipelines.get(key);
             if (cached) {
                 return cached;

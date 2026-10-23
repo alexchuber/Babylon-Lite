@@ -8,8 +8,8 @@ import type { MorphBinding } from "../animation/types.js";
 import type { AnimationGroupMask } from "../animation/animation-group-mask.js";
 import { PATH_TRANSLATION, PATH_ROTATION, PATH_SCALE, PATH_WEIGHTS, PATH_POINTER } from "../animation/types.js";
 import { evaluateSampler } from "../animation/evaluate.js";
-import { mat4ComposeInto } from "../math/mat4-compose-into.js";
-import { mat4MultiplyInto } from "../math/mat4-multiply-into.js";
+import { composeMat4IntoBuffer } from "../math/compose-mat4-into-buffer.js";
+import { multiplyMat4IntoBuffer } from "../math/multiply-mat4-into-buffer.js";
 import type { Mat4Storage } from "../math/types.js";
 import type { BoneOverride } from "./bone-control.js";
 import { _boneApplier } from "./bone-control-hooks.js";
@@ -134,8 +134,22 @@ export function createAnimationController(
     boneOverrides?: ReadonlyMap<number, unknown>,
     nodeNames?: readonly (string | undefined)[]
 ): AnimationController {
-    const requiresEngine = skeletons.length > 0 || morphBindings.length > 0;
+    const startTime = clip._startTime ?? 0;
+    const endTime = startTime + clip.duration;
     const numNodes = nodes.length;
+    const clipSkeletons = skeletons.filter((skeleton) =>
+        skeleton.jointNodes.some((jointNode) =>
+            clip.channels.some((channel) => {
+                for (let nodeIndex = jointNode; nodeIndex >= 0; nodeIndex = nodes[nodeIndex]!.parentIdx) {
+                    if (channel.path < PATH_WEIGHTS && channel.nodeIdx === nodeIndex) {
+                        return true;
+                    }
+                }
+                return false;
+            })
+        )
+    );
+    const requiresEngine = clipSkeletons.length > 0 || morphBindings.length > 0;
 
     // Plain node-TRS bindings: glTF translation/rotation/scale channels that target
     // a non-excluded node with a live scene node. These move node-animated meshes
@@ -172,7 +186,7 @@ export function createAnimationController(
     const topoOrder = computeTopoOrder(nodes);
 
     // Per-skeleton bone scratch
-    const boneScratch = skeletons.map((s) => s.boneMatrices);
+    const boneScratch = clipSkeletons.map((s) => s.boneMatrices);
 
     // Per-morph-binding scratch for weight evaluation
     const morphBindingsByNode: (MorphBinding[] | undefined)[] = [];
@@ -230,7 +244,7 @@ export function createAnimationController(
     };
 
     const ctrl: AnimationController = {
-        time: 0,
+        time: startTime,
         playing: true,
         speedRatio: 1,
         loop: true,
@@ -247,7 +261,7 @@ export function createAnimationController(
         },
 
         tick:
-            clip.duration <= 0
+            clip.duration <= 0 && clip.channels.length === 0
                 ? noopAnimationTick
                 : (deltaMs: number, engine?: EngineContext): void => {
                       if (engine) {
@@ -259,18 +273,20 @@ export function createAnimationController(
                       }
                       const device = requiresEngine && uploadGpu ? activeEngine!._device : null;
 
-                      if (ctrl.playing) {
+                      if (ctrl.playing && clip.duration > 0) {
                           ctrl.time += (deltaMs / 1000) * ctrl.speedRatio;
                       }
 
                       // Always wrap/clamp — ensures externally-set time (goToFrame) is valid
-                      if (ctrl.loop) {
-                          ctrl.time %= clip.duration;
-                          if (ctrl.time < 0) {
+                      if (clip.duration <= 0) {
+                          ctrl.time = startTime;
+                      } else if (ctrl.loop) {
+                          ctrl.time = startTime + ((ctrl.time - startTime) % clip.duration);
+                          if (ctrl.time < startTime) {
                               ctrl.time += clip.duration;
                           }
                       } else {
-                          ctrl.time = Math.min(Math.max(ctrl.time, 0), clip.duration);
+                          ctrl.time = Math.min(Math.max(ctrl.time, startTime), endTime);
                       }
                       const t = ctrl.time;
 
@@ -334,7 +350,7 @@ export function createAnimationController(
                                           const mb = bindings[bindingIndex]!;
                                           mb.weights.set(morphUploadF32.subarray(0, tc));
                                           // Write the weights array after the immutable header.
-                                          if (uploadGpu) {
+                                          if (uploadGpu && !mb.runtimeMorphTargets?._disposed) {
                                               device!.queue.writeBuffer(mb.runtimeMorphTargets?.weightsBuffer ?? mb.weightsBuffer, 16, morphUploadF32.buffer, 0, tc * 4);
                                           }
                                       }
@@ -386,7 +402,7 @@ export function createAnimationController(
                           if (node._matrix) {
                               localMat.set(node._matrix, nodeIdx * 16);
                           } else {
-                              mat4ComposeInto(
+                              composeMat4IntoBuffer(
                                   localMat,
                                   nodeIdx * 16,
                                   currentTRS[off + T_OFF]!,
@@ -404,28 +420,28 @@ export function createAnimationController(
 
                           const parentIdx = node.parentIdx;
                           if (parentIdx >= 0) {
-                              mat4MultiplyInto(worldMat, nodeIdx * 16, worldMat, parentIdx * 16, localMat, nodeIdx * 16);
+                              multiplyMat4IntoBuffer(worldMat, nodeIdx * 16, worldMat, parentIdx * 16, localMat, nodeIdx * 16);
                           } else {
                               // Root node: pre-multiply RH→LH
-                              mat4MultiplyInto(worldMat, nodeIdx * 16, RH_TO_LH, 0, localMat, nodeIdx * 16);
+                              multiplyMat4IntoBuffer(worldMat, nodeIdx * 16, RH_TO_LH, 0, localMat, nodeIdx * 16);
                           }
                       }
 
                       // 4. Compute bone matrices and upload to GPU
-                      for (let si = 0; si < skeletons.length; si++) {
-                          const skel = skeletons[si]!;
+                      for (let si = 0; si < clipSkeletons.length; si++) {
+                          const skel = clipSkeletons[si]!;
                           const boneData = boneScratch[si]!;
 
                           for (let bi = 0; bi < skel.boneCount; bi++) {
                               const jointIdx = skel.jointNodes[bi]!;
                               const ibmOff = bi * 16;
                               // boneMatrix = invMeshWorld * jointWorld * IBM
-                              mat4MultiplyInto(_boneTmp, 0, skel.invMeshWorld as unknown as Mat4Storage, 0, worldMat, jointIdx * 16);
-                              mat4MultiplyInto(boneData, bi * 16, _boneTmp, 0, skel.inverseBindMatrices, ibmOff);
+                              multiplyMat4IntoBuffer(_boneTmp, 0, skel.invMeshWorld as unknown as Mat4Storage, 0, worldMat, jointIdx * 16);
+                              multiplyMat4IntoBuffer(boneData, bi * 16, _boneTmp, 0, skel.inverseBindMatrices, ibmOff);
                           }
 
                           // Upload to GPU
-                          if (uploadGpu) {
+                          if (uploadGpu && !skel.runtimeSkeleton?._disposed) {
                               const texWidth = skel.boneCount * 4;
                               device!.queue.writeTexture(
                                   { texture: skel.runtimeSkeleton?.boneTexture ?? skel.boneTexture },
@@ -442,5 +458,5 @@ export function createAnimationController(
 }
 
 function noopAnimationTick(): void {
-    // Empty controller for zero-duration clips.
+    // Empty controller for clips with no samples to evaluate.
 }

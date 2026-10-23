@@ -35,10 +35,18 @@ const MIRRORED_NODE_IDS = new Set([168, 257, 266, 269]);
 /** Scenes whose glTF draws a non-triangle-list topology, keyed to the value they must retain. */
 const EXOTIC_TOPOLOGY_SCENES = new Map([[260, "triangle-strip"]]);
 
+const requestedSceneIds = process.env.BUNDLE_SCENES
+    ? process.env.BUNDLE_SCENES.split(",")
+          .map((scene) => scene.trim().replace(/^scene/, ""))
+          .filter(Boolean)
+          .map(Number)
+          .filter(Number.isFinite)
+    : [];
+const selectedScenes = requestedSceneIds.length ? new Set(requestedSceneIds) : null;
 const SCENES = allScenes.filter((s) => {
     // Scene 114 opts out because WebGPU's optional "primitive-index" feature
     // changes which picking chunks the browser fetches across machines.
-    return !s.skipBundleSize && s.maxRawKB != null;
+    return (!selectedScenes || selectedScenes.has(s.id)) && !s.skipBundleSize && s.maxRawKB != null;
 });
 
 interface BundleInfoModule {
@@ -161,6 +169,15 @@ for (const scene of SCENES) {
         const loadedFiles = jsPayloads.map((p) => p.file);
         const runtimeModules = getRuntimeModuleIds(`scene${scene.id}`, loadedFiles);
 
+        // MeshLoD is fully opt-in and tree-shaken away: no non-MeshLoD scene may fetch
+        // any /mesh-lod/ runtime module or the PBR MeshLoD renderable/compose chunks
+        // at runtime (REQ-INT-8, T-22). Emitted-but-never-fetched chunks are fine —
+        // this gates on runtime fetches only.
+        const meshLoDModules = runtimeModules.filter((id) => /\/mesh-lod\//.test(id) || /\/pbr-mesh-lod-/.test(id));
+        expect(meshLoDModules, `${scene.name} must not fetch MeshLoD modules at runtime; found: ${meshLoDModules.join(", ")}`).toEqual([]);
+        const meshLoDChunks = loadedFiles.filter((f) => /mesh-lod/.test(f));
+        expect(meshLoDChunks, `${scene.name} must not fetch MeshLoD chunks at runtime; found: ${meshLoDChunks.join(", ")}`).toEqual([]);
+
         expect(rawKB, `raw ${rawKB.toFixed(1)} KB exceeds ceiling ${scene.maxRawKB} KB (+${(rawKB - scene.maxRawKB!).toFixed(1)} KB over)`).toBeLessThanOrEqual(scene.maxRawKB!);
 
         // Pure-2D ceiling: scenes 50/51 must NOT pull any scene/* code, the depth-hosted
@@ -183,6 +200,8 @@ for (const scene of SCENES) {
                     )
                 );
                 expect(optionalBlendOffenders, `scene50 must not load optional particle Sprite2D blend modules; found: ${optionalBlendOffenders.join(", ")}`).toEqual([]);
+                const ySortOffenders = runtimeModules.filter((id) => /\/sprite\/sprite-2d-(?:y-sort(?:-hook)?|handle-y-sort)\.[jt]s$/.test(id));
+                expect(ySortOffenders, `scene50 must not load optional Sprite2D Y-sort modules; found: ${ySortOffenders.join(", ")}`).toEqual([]);
             }
         }
 
@@ -234,6 +253,60 @@ for (const scene of SCENES) {
             expect(offenders, `scene301 must not load billboard or scene-rendered sprite paths; found: ${offenders.join(", ")}`).toEqual([]);
         }
 
+        if (scene.slug === "scene302-npe-moving-emitter") {
+            for (const required of [
+                /\/particle\/node\/npe-emitter-provider\.[jt]s$/,
+                /\/math\/invert-mat4-to-ref-or-identity\.[jt]s$/,
+                /\/particle\/particle-scene\.[jt]s$/,
+                /\/particle\/particle-billboard\.[jt]s$/,
+                /\/sprite\/billboard-scene\.[jt]s$/,
+                /\/sprite\/billboard-renderable\.[jt]s$/,
+            ]) {
+                expect(
+                    runtimeModules.some((id) => required.test(id)),
+                    `scene302 is missing required moving-emitter billboard module ${required}; loaded modules: ${runtimeModules.join(", ")}`
+                ).toBe(true);
+            }
+            const offenders = runtimeModules.filter((id) =>
+                /\/(math\/invert-mat4|particle\/(particle-(blend|billboard-renderable|billboard-scene|sprite-2d|sprite-2d-blend-modes)|node\/(npe-(blend-modes|flow-map-runtime|graph-plumbing(?:-runtime)?|live-emitter|noise-runtime|texture-update-runtime|texture-content)|blocks\/(cpu-texture-source-block|update-(flow-map|noise)-block)))|sprite\/(sprite-renderer|sprite-custom-shader|sprite-renderable))\.[jt]s$/.test(
+                    id
+                )
+            );
+            expect(offenders, `scene302 must not load graph plumbing, ordinary inversion, flow/noise, exact-blend, or Sprite2D paths; found: ${offenders.join(", ")}`).toEqual([]);
+        }
+
+        if (scene.slug === "scene305-npe-teleport") {
+            expect(
+                runtimeModules.some((id) => /\/particle\/node\/npe-graph-plumbing\.[jt]s$/.test(id)),
+                `scene305 is missing the thin graph-plumbing helper; loaded modules: ${runtimeModules.join(", ")}`
+            ).toBe(true);
+            expect(
+                runtimeModules.some((id) => /\/particle\/node\/npe-graph-plumbing-runtime\.[jt]s$/.test(id)),
+                `scene305 is missing the heavy graph-plumbing runtime; loaded modules: ${runtimeModules.join(", ")}`
+            ).toBe(true);
+            expect(
+                runtimeModules.some((id) => /\/particle\/node\/blocks\/particle-local-variable-block\.[jt]s$/.test(id)),
+                `scene305 is missing the Particle LocalVariable evaluator; loaded modules: ${runtimeModules.join(", ")}`
+            ).toBe(true);
+            const offenders = runtimeModules.filter((id) =>
+                /\/(?:camera\/arc-rotate-controls|particle\/(?:particle-(?:blend|sprite-2d|sprite-2d-blend-modes)|node\/npe-(?:blend-modes|emitter-provider|flow-map-runtime|noise-runtime|texture-update-runtime|texture-content))|sprite\/(?:sprite-renderer|sprite-custom-shader))\.[jt]s$/.test(
+                    id
+                )
+            );
+            expect(offenders, `scene305 must not load camera controls, provider, specialized texture, blend, or Sprite2D modules; found: ${offenders.join(", ")}`).toEqual([]);
+        }
+
+        if (scene.slug === "scene303-sprite2d-y-sort") {
+            for (const required of [/\/sprite\/sprite-2d-y-sort\.[jt]s$/, /\/sprite\/sprite-renderer\.[jt]s$/, /\/sprite\/picking\/pick-sprite-2d\.[jt]s$/]) {
+                expect(
+                    runtimeModules.some((id) => required.test(id)),
+                    `scene303 is missing required Sprite2D Y-sort module ${required}; loaded modules: ${runtimeModules.join(", ")}`
+                ).toBe(true);
+            }
+            const offenders = runtimeModules.filter((id) => /\/sprite\/(?:sprite-renderable|billboard-(?:sprite|scene|renderable|pipeline))\.[jt]s$/.test(id));
+            expect(offenders, `scene303 must remain pure SpriteRenderer with no depth-hosted or billboard paths; found: ${offenders.join(", ")}`).toEqual([]);
+        }
+
         // Scene 53 — depth-hosted sprites — MUST load sprite-renderable.js
         // (proves the addToScene sprite admission path is active) and MUST load
         // scene-core (it is a real 3D scene, not pure-2D).
@@ -259,8 +332,9 @@ for (const scene of SCENES) {
 
         // Orthographic projection is an opt-in seam: `camera.ts` holds a module-local projector that
         // only `enableOrthographicCamera` installs, so the branch folds away for every perspective-only
-        // scene. Guard both directions — no other scene may pull the module in, and scene 268 must.
-        const ORTHO_SCENE_IDS = new Set([268]);
+        // scene. Guard both directions — no other scene may pull the module in, and the
+        // explicitly orthographic scenes must.
+        const ORTHO_SCENE_IDS = new Set([187, 268, 311, 312]);
         if (ORTHO_SCENE_IDS.has(scene.id)) {
             expect(
                 runtimeModules.some((id) => /\/camera\/orthographic\.[jt]s$/.test(id)),
@@ -274,9 +348,9 @@ for (const scene of SCENES) {
         // Mesh-only / non-sprite 3D scenes must NOT pull in any sprite code.
         // List excludes the sprite-using scenes (50-59, the 92-98 custom-shader scenes, and the
         // 117/118 sprite-picking scenes). 60-series are NME demos with no sprites; 1-40 are core 3D.
-        // 262/263/264/276/277/280/281/283/284 are NPE billboard scenes; 300/301 use NPE Sprite2D bridges.
+        // 262/263/264/276/277/280/281/283/284/302/305 are NPE billboard scenes; 300/301/303 use Sprite2D.
         const SPRITE_USING_IDS = new Set([
-            50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 92, 93, 94, 95, 96, 97, 98, 117, 118, 205, 206, 262, 263, 264, 276, 277, 280, 281, 283, 284, 300, 301,
+            50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 92, 93, 94, 95, 96, 97, 98, 117, 118, 205, 206, 262, 263, 264, 276, 277, 280, 281, 283, 284, 300, 301, 302, 303, 305,
         ]);
         if (!SPRITE_USING_IDS.has(scene.id)) {
             const offenders = runtimeModules.filter((id) => /\/sprite\/.*\.[jt]s$/.test(id));

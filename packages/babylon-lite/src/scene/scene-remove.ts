@@ -1,15 +1,15 @@
-import type { addToScene, SceneContext } from "./scene-core.js";
+import { _hasSceneChangeHook, _notifySceneChange, _runSceneChange } from "./scene-core.js";
+import type { addToScene, SceneContext, SceneEntity } from "./scene-core.js";
 import { unregisterMeshScene } from "./mesh-scene-registry.js";
 import type { Mesh } from "../mesh/mesh.js";
 import type { LightBase } from "../light/types.js";
 import type { Camera } from "../camera/camera.js";
 import type { ShadowGenerator } from "../shadow/shadow-generator.js";
-import type { TransformNode } from "./transform-node.js";
 import type { SceneNode } from "./scene-node.js";
 import type { AssetContainer } from "../asset-container.js";
 import { disposeMeshGpu } from "../mesh/mesh-dispose.js";
-import { removeMeshFromTask } from "../frame-graph/render-task.js";
-import type { RenderTask } from "../frame-graph/render-task.js";
+import { _removeMeshFromRenderTask } from "../frame-graph/render-task-base.js";
+import type { RenderTaskBase } from "../frame-graph/render-task-base.js";
 import { retireGpuResources } from "../engine/gpu-resource-retirement.js";
 
 /** Remove an entity from the scene, undoing what `addToScene` did. Accepts the same
@@ -28,12 +28,16 @@ import { retireGpuResources } from "../engine/gpu-resource-retirement.js";
  *  `mesh.visible = false` (or `setSubtreeVisible`) instead of removing it.
  *
  *  Standalone function for tree-shaking — only included when actually used. */
-export function removeFromScene(scene: SceneContext, entity: Mesh | LightBase | Camera | ShadowGenerator | TransformNode | AssetContainer): void {
+export function removeFromScene(scene: SceneContext, entity: SceneEntity): void {
+    if (_hasSceneChangeHook() && scene._sceneChanges && scene._sceneChanges.depth === 0) {
+        _runSceneChange(scene, () => removeFromScene(scene, entity));
+        return;
+    }
     // AssetContainer — undo addToScene(scene, container) field by field.
     if ("entities" in entity) {
         const container = entity as AssetContainer;
         for (const e of container.entities) {
-            removeFromScene(scene, e as Mesh | LightBase | TransformNode);
+            removeFromScene(scene, e as SceneEntity);
         }
         if (container.camera && scene.camera === container.camera) {
             scene.camera = null;
@@ -49,11 +53,24 @@ export function removeFromScene(scene: SceneContext, entity: Mesh | LightBase | 
             spliceOut(scene._beforeRender, hook);
             container._beforeRenderHook = undefined;
         }
+        const cleanups = container._sceneCleanups;
+        if (cleanups) {
+            const cleanup = cleanups.get(scene);
+            if (cleanup) {
+                spliceOut(scene._disposables, cleanup);
+                cleanups.delete(scene);
+                if (!scene._z) {
+                    cleanup();
+                }
+            }
+        }
+        _notifySceneChange(scene, entity, "removed");
         return;
     }
     // Mesh — carries GPU geometry + material. Owns the only heavy removal path.
     if ("_gpu" in entity && "material" in entity) {
         removeMeshFromScene(scene, entity as unknown as Mesh);
+        _notifySceneChange(scene, entity, "removed");
         removeChildren(scene, entity as unknown as SceneNode);
         return;
     }
@@ -81,6 +98,7 @@ export function removeFromScene(scene: SceneContext, entity: Mesh | LightBase | 
     }
     // TransformNode / any other scene-graph node needs no bookkeeping of its own.
     detachParent(entity);
+    _notifySceneChange(scene, entity, "removed");
     removeChildren(scene, entity as unknown as SceneNode);
 }
 
@@ -99,6 +117,7 @@ declare const _removeMatchesAdd: _AssertTrue<_ParamsEqual<Parameters<typeof addT
 interface DetachablePacket {
     _disposed: boolean;
     _owner?: DetachablePacket[];
+    _onOwnerEmpty?: () => void;
 }
 type DetachableDisposer = (() => void) & { p?: DetachablePacket };
 
@@ -112,6 +131,7 @@ type DetachableDisposer = (() => void) & { p?: DetachablePacket };
  *  actual GPU destruction has to wait. Twin of the detach in `scene-runtime-mesh-build.ts`. */
 function retireMeshTeardown(scene: SceneContext, teardown: (() => void)[]): void {
     for (const dispose of teardown) {
+        spliceOut(scene._disposables, dispose);
         const packet = (dispose as DetachableDisposer).p;
         if (packet) {
             packet._disposed = true;
@@ -122,6 +142,14 @@ function retireMeshTeardown(scene: SceneContext, teardown: (() => void)[]): void
                     owner.splice(index, 1);
                 }
                 packet._owner = undefined;
+                if (owner.length === 0) {
+                    packet._onOwnerEmpty?.();
+                }
+            } else {
+                packet._onOwnerEmpty?.();
+            }
+            if (packet._onOwnerEmpty) {
+                packet._onOwnerEmpty = undefined;
             }
         }
     }
@@ -265,7 +293,7 @@ function removeChildren(scene: SceneContext, node: SceneNode): void {
     const kids = node.children;
     if (kids?.length) {
         for (const child of [...kids]) {
-            removeFromScene(scene, child as Mesh);
+            removeFromScene(scene, child as SceneEntity);
         }
     }
 }
@@ -273,6 +301,7 @@ function removeChildren(scene: SceneContext, node: SceneNode): void {
 /** Remove a mesh from the scene and destroy its GPU resources.
  *  Internal helper — `removeFromScene` dispatches here for the Mesh case. */
 function removeMeshFromScene(scene: SceneContext, mesh: Mesh): void {
+    scene._meshMaterialChange?.(mesh);
     // Notify tasks that retain their own per-mesh bindings before this mesh's
     // UBOs and shared geometry are destroyed below. The hook is optional so core
     // scene removal does not statically import any feature task module.
@@ -292,14 +321,6 @@ function removeMeshFromScene(scene: SceneContext, mesh: Mesh): void {
         didMutate = true;
         teardown.push(...fns);
         scene._meshDisposables.delete(mesh);
-    }
-    // AUX (override) view packets — depth/SSAO no-colour views another task registered on this mesh. A material
-    // swap deliberately leaves these alone (see `_meshAuxDisposables`); a real removal must still free them.
-    const auxFns = scene._meshAuxDisposables.get(mesh);
-    if (auxFns) {
-        didMutate = true;
-        teardown.push(...auxFns);
-        scene._meshAuxDisposables.delete(mesh);
     }
     const mi2 = scene.meshes.indexOf(mesh);
     if (mi2 >= 0) {
@@ -323,11 +344,21 @@ function removeMeshFromScene(scene: SceneContext, mesh: Mesh): void {
         scene._renderableVersion++;
     }
     // Drop from the material group registry so a later full rebuild (e.g. device-lost
-    // recovery) doesn't try to re-materialize a disposed mesh.
+    // recovery) doesn't try to re-materialize a disposed mesh. Also drop the mesh's entries from
+    // the group's tracked output (`o`): runtime builds append to it, and a retired renderable left
+    // there keeps its bind groups and packets reachable until the scene is disposed.
     for (const group of scene._groups.values()) {
         const gi = group.indexOf(mesh);
         if (gi >= 0) {
             group.splice(gi, 1);
+        }
+        const o = group.o;
+        if (o) {
+            for (let oi = o.length; oi--;) {
+                if (o[oi]!.mesh === mesh) {
+                    o.splice(oi, 1);
+                }
+            }
         }
     }
     // Drop any pending swap-queue entry (mesh added then removed before the drain).
@@ -347,7 +378,7 @@ function removeMeshFromScene(scene: SceneContext, mesh: Mesh): void {
     // (a `_config` field alone is NOT sufficient — post/effect tasks also have one).
     for (const task of scene._frameGraph._tasks) {
         if ("_renderables" in (task as object)) {
-            removeMeshFromTask(task as RenderTask, mesh);
+            _removeMeshFromRenderTask(task as RenderTaskBase, mesh);
         }
     }
     // Free the mesh's shared GPU buffers only when this was its LAST owning scene — a single

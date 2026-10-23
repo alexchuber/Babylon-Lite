@@ -24,8 +24,9 @@
  * ```
  */
 
+import type { ShapeCastInput as HavokShapeCastInput } from "@babylonjs/havok";
 import type { Quat, Vec3 } from "../math/types.js";
-import type { PhysicsBody, PhysicsShape, PhysicsWorld } from "./havok.js";
+import type { PhysicsBody, PhysicsShape, PhysicsWorld, ResolvedPhysicsBodyInstance } from "./havok.js";
 
 /** Query parameters for {@link shapeProximity}. */
 export interface ShapeProximityQuery {
@@ -53,6 +54,8 @@ export interface ShapeCastQuery {
     endPosition: Vec3;
     /** Whether trigger volumes count as hits. Default `false`. */
     shouldHitTriggers?: boolean;
+    /** Body to exclude, such as the body whose own shape is being swept. */
+    ignoreBody?: PhysicsBody;
 }
 
 /** Result of a {@link shapeProximity} query. */
@@ -111,13 +114,15 @@ export interface RaycastResult {
     triangleIndex: number;
     /** The body that was hit, or `null` when nothing was hit (or the body is not tracked). */
     body: PhysicsBody | null;
+    /** Thin-instance index of `body`; `0` for an ordinary body and `-1` when no tracked body was resolved. */
+    bodyIndex: number;
 }
 
 /** Ignore-none body filter handle: a single zero body id. Lazily built — a
  *  module-level `BigInt(0)` call is a module-init side effect that would defeat
  *  the package's `sideEffects: false` contract. */
-let _ignoreNone: bigint[] | null = null;
-function ignoreNone(): bigint[] {
+let _ignoreNone: [bigint] | null = null;
+function ignoreNone(): [bigint] {
     return (_ignoreNone ??= [BigInt(0)]);
 }
 
@@ -180,7 +185,8 @@ export function shapeCast(world: PhysicsWorld, query: ShapeCastQuery): ShapeCast
     const hknp = world._hknp;
     const collector = getCollector(world);
     const { rotation: r, startPosition: s, endPosition: e } = query;
-    const hkQuery = [query.shape._hkShape, [r.x, r.y, r.z, r.w], [s.x, s.y, s.z], [e.x, e.y, e.z], query.shouldHitTriggers ?? false, ignoreNone()];
+    const ignoredBody: [bigint] = query.ignoreBody ? [BigInt(query.ignoreBody._hkBody[0])] : ignoreNone();
+    const hkQuery: HavokShapeCastInput = [query.shape._hkShape, [r.x, r.y, r.z, r.w], [s.x, s.y, s.z], [e.x, e.y, e.z], query.shouldHitTriggers ?? false, ignoredBody];
     hknp.HP_World_ShapeCastWithCollector(world._hkWorld, collector, hkQuery);
 
     if (hknp.HP_QueryCollector_GetNumHits(collector)[1] > 0) {
@@ -223,24 +229,30 @@ export function physicsRaycast(world: PhysicsWorld, from: Vec3, to: Vec3, query:
         const dx = from.x - hitPos[0];
         const dy = from.y - hitPos[1];
         const dz = from.z - hitPos[2];
+        const body = findBodyById(world, hitData[0][0]);
         return {
             hasHit: true,
             hitPoint: hitVec(hitPos),
             hitNormal: hitVec(hitData[4]),
             hitDistance: Math.sqrt(dx * dx + dy * dy + dz * dz),
             triangleIndex: hitData[5],
-            body: findBodyById(world, hitData[0][0]),
+            body: body?.[0] ?? null,
+            bodyIndex: body?.[2] ?? -1,
         };
     }
-    return { hasHit: false, hitPoint: { x: 0, y: 0, z: 0 }, hitNormal: { x: 0, y: 0, z: 0 }, hitDistance: 0, triangleIndex: -1, body: null };
+    return { hasHit: false, hitPoint: { x: 0, y: 0, z: 0 }, hitNormal: { x: 0, y: 0, z: 0 }, hitDistance: 0, triangleIndex: -1, body: null, bodyIndex: -1 };
 }
 
-/** Resolve a raycast hit's native body id back to the tracked {@link PhysicsBody}. */
-function findBodyById(world: PhysicsWorld, hitBodyId: unknown): PhysicsBody | null {
+function findBodyById(world: PhysicsWorld, hitBodyId: unknown): ResolvedPhysicsBodyInstance | null {
+    const thinBody = world._thin?.resolve(hitBodyId);
+    if (thinBody) {
+        return thinBody;
+    }
     const bodies = world._bodies;
     for (let i = 0; i < bodies.length; i++) {
-        if (bodies[i]!._hkBody[0] === hitBodyId) {
-            return bodies[i]!;
+        const body = bodies[i]!;
+        if (body._hkBody[0] === hitBodyId) {
+            return [body, body._hkBody, 0];
         }
     }
     return null;

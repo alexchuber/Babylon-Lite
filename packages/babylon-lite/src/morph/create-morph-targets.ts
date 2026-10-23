@@ -13,7 +13,7 @@ import { F32, U32, U8 } from "../engine/typed-arrays.js";
 import { BU } from "../engine/gpu-flags.js";
 import type { MorphTargetData } from "../animation/types.js";
 import type { EngineContext } from "../engine/engine.js";
-import { createMappedBuffer } from "../resource/gpu-buffers.js";
+import { createMappedBuffer } from "../resource/mapped-buffer.js";
 
 /** Byte size of the weights-buffer header (count u32, vertexCount u32, 2× pad) preceding the weights array. */
 export const MORPH_WEIGHTS_HEADER_BYTES = 16;
@@ -77,6 +77,9 @@ export function createMorphTargets(
  *  @param weights - New morph weights; missing slots are reset to 0.
  */
 export function setMorphTargetWeights(engine: EngineContext, morphTargets: MorphTargetData, weights: ArrayLike<number>): void {
+    if (morphTargets._disposed) {
+        throw new Error("Cannot update disposed morph targets");
+    }
     const count = Math.min(morphTargets.count, weights.length);
     morphTargets.weights.fill(0);
     for (let i = 0; i < count; i++) {

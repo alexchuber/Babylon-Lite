@@ -53,8 +53,10 @@ export interface AnimationClip {
     readonly name: string;
     readonly channels: readonly AnimationChannel[];
     readonly samplers: readonly AnimationSampler[];
-    /** Total duration in seconds (max of all sampler input times). */
+    /** Total playback duration in seconds. */
     readonly duration: number;
+    /** @internal Authored first sample time. Defaults to 0 for glTF. */
+    readonly _startTime?: number;
     /** Frame rate used by AnimationGroup goToFrame(); defaults to 60. */
     readonly frameRate?: number;
 }
@@ -158,6 +160,9 @@ export interface SkeletonData {
     /** @internal Extra-owner count when shared with a clone via `cloneTransformNode` — see
      *  resource/ref-count.ts. Absent/undefined means exactly one (implicit) owner. */
     _refCount?: number;
+    /** @internal True once the last owning mesh has released the GPU resources. Animation
+     *  controllers may outlive removed meshes, so they use this to skip stale uploads. */
+    _disposed?: boolean;
     /** @internal Shared ownership for skin vertex buffers reused by VAT data. */
     readonly _skinBuffers: SkinBufferData;
     /** @internal Shared node-index → bone override map, stamped by `enableBoneControl`'s
@@ -226,4 +231,6 @@ export interface MorphTargetData {
     /** @internal Extra-owner count when shared with a clone via `cloneTransformNode` — see
      *  resource/ref-count.ts. Absent/undefined means exactly one (implicit) owner. */
     _refCount?: number;
+    /** @internal True once the last owning mesh has released the GPU resources. */
+    _disposed?: boolean;
 }

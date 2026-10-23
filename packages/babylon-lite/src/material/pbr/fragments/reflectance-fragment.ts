@@ -11,7 +11,8 @@
 import type { ShaderFragment, BindingDecl, UboField } from "../../../shader/fragment-types.js";
 import type { PbrMaterialProps } from "../pbr-material.js";
 import type { PbrExt } from "../pbr-flags.js";
-import { PBR_HAS_METALLIC_REFLECTANCE_MAP, PBR_HAS_REFLECTANCE_MAP, PBR_HAS_USE_ALPHA_ONLY_MR, PBR2_HAS_REFLECTANCE_FACTORS } from "../pbr-flag-bits.js";
+import { PBR_HAS_METALLIC_REFLECTANCE_MAP, PBR_HAS_REFLECTANCE_MAP, PBR_HAS_USE_ALPHA_ONLY_MR, PBR2_HAS_REFLECTANCE_FACTORS, PBR2_HAS_UV_TRANSFORM } from "../pbr-flag-bits.js";
+import { wgsl } from "../../../shader/wgsl.js";
 
 // Reflectance-only features2 bit (reserved in pbr-flag-bits.ts). Defined here,
 // not in the shared flag module, for zero bundle movement on scenes that never
@@ -21,7 +22,7 @@ const PBR2_REFL_UV_TX = 1 << 26;
 // WebGPU shader stage constants
 const STAGE_FRAGMENT = 0x2;
 
-const reflUvExpr = (name: string): string => `(vec2<f32>(dot(material.${name}m.xy, input.uv), dot(material.${name}m.zw, input.uv)) + material.${name}t.xy)`;
+const reflUvExpr = (name: string): string => wgsl`(vec2<f32>(dot(material.${name}m.xy, input.uv), dot(material.${name}m.zw, input.uv)) + material.${name}t.xy)`;
 
 /** Write a 2x2 UV matrix (vec4) + translate (vec4) for a reflectance texture. */
 function writeReflUvTransform(
@@ -90,8 +91,18 @@ export function createReflectanceFragment(
     hasReflectanceMap: boolean,
     useAlphaOnlyMR: boolean,
     hasOcclusionUv2: boolean = false,
-    hasUvTx: boolean = false
+    hasUvTx: boolean = false,
+    hasOcclusionSplit: boolean = false
 ): ShaderFragment {
+    // Every arm wraps the same `mix(1.0, _, occlusionStrength)`, so only the
+    // sampled expression varies. Mirrors createPbrTemplateExt's three-arm
+    // `occlusionOverride` — `occlUV` included, which this slot replaces.
+    const occlusionSample = hasOcclusionUv2
+        ? "textureSample(occlusionTexture, occlusionSampler_, input.uv2).r"
+        : hasOcclusionSplit
+          ? "textureSample(ormTexture,ormSampler,occlUV).r"
+          : "orm.r";
+
     const bindings: BindingDecl[] = [];
     if (hasMetallicReflectanceMap) {
         bindings.push(
@@ -110,29 +121,29 @@ export function createReflectanceFragment(
     const mrReflUv = hasUvTx ? reflUvExpr("mrReflUV") : "input.uv";
 
     // Build F0 computation code
-    let f0Code = `var mrFactors = vec4<f32>(material.metallicReflectanceColor, material.metallicF0Factor);
+    let f0Code = wgsl`var mrFactors = vec4<f32>(material.metallicReflectanceColor, material.metallicF0Factor);
 var specularWeight = material.specularWeight;`;
     if (hasReflectanceMap) {
-        f0Code += `
+        f0Code = wgsl`${f0Code}
 { let rSample = textureSample(reflectanceMap, reflectanceMapSampler, ${reflUv});
   let rLinear = pow(rSample.rgb, vec3<f32>(2.2));
   mrFactors = vec4<f32>(mrFactors.rgb * rLinear, mrFactors.a); }`;
     }
     if (hasMetallicReflectanceMap) {
         if (!useAlphaOnlyMR) {
-            f0Code += `
+            f0Code = wgsl`${f0Code}
 { let mrSample = textureSample(metallicReflectanceMap, metallicReflectanceMapSampler, ${mrReflUv});
   let mrLinear = pow(mrSample.rgb, vec3<f32>(2.2));
   mrFactors = vec4<f32>(mrFactors.rgb * mrLinear, mrFactors.a * mrSample.a);
   specularWeight *= mrSample.a; }`;
         } else {
-            f0Code += `
+            f0Code = wgsl`${f0Code}
 { let mrSample = textureSample(metallicReflectanceMap, metallicReflectanceMapSampler, ${mrReflUv});
   mrFactors = vec4<f32>(mrFactors.rgb, mrFactors.a * mrSample.a);
   specularWeight *= mrSample.a; }`;
         }
     }
-    f0Code += `
+    f0Code = wgsl`${f0Code}
 let dielectricF0 = material.reflectance * mrFactors.a;
 let surfaceReflectivityColor = mrFactors.rgb;
 let dielectricColorF0 = vec3<f32>(dielectricF0) * surfaceReflectivityColor;
@@ -167,9 +178,7 @@ let surfaceAlbedo = baseColor * (vec3<f32>(1.0) - vec3<f32>(dielectricF0) * surf
 
         _fragmentSlots: {
             MF: f0Code,
-            AT: hasOcclusionUv2
-                ? `let occlusion = mix(1.0, textureSample(occlusionTexture, occlusionSampler_, input.uv2).r, material.occlusionStrength);`
-                : `let occlusion = mix(1.0, orm.r, material.occlusionStrength);`,
+            AT: wgsl`var occlusion = mix(1.0, ${occlusionSample}, material.occlusionStrength);`,
         },
     };
 }
@@ -224,7 +233,12 @@ export const pbrExt: PbrExt = {
             // createPbrTemplateExt's _hasOcclusionUv2 so the occlusionTexture binding it declares
             // and this sample agree. ctx._uv2Mask is already zeroed when uv2 isn't present.
             ((ctx._uv2Mask ?? 0) & (1 << 5)) !== 0,
-            (ctx._features2 & PBR2_REFL_UV_TX) !== 0
+            (ctx._features2 & PBR2_REFL_UV_TX) !== 0,
+            // Occlusion sampling the ORM texture at its own transformed UV. Must match
+            // createPbrTemplateExt's `_hasOcclusionSplit`, `occlUV` included: this slot
+            // replaces the template's occlusion line, so dropping the arm silently drops
+            // occlusion's transform.
+            (ctx._features2 & PBR2_HAS_UV_TRANSFORM) !== 0 && (ctx._features2 & (1 << 28)) !== 0
         );
     },
     writeUbo: writeReflectanceUBO as PbrExt["writeUbo"],

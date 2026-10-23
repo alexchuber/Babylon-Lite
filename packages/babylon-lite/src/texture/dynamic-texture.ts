@@ -33,10 +33,11 @@
  */
 
 import { TU } from "../engine/gpu-flags.js";
-import { acquireTexture, getOrCreateSampler } from "../resource/gpu-pool.js";
+import { acquireTexture } from "../resource/texture-acquire.js";
+import { getOrCreateSampler, type TextureSamplerDescriptor } from "../resource/texture-sampler-pool.js";
 import { generateMipmaps } from "./generate-mipmaps.js";
 import { mipLevelCount } from "./mip-count.js";
-import type { Texture2D, Texture2DRecoverySource } from "./texture-2d.js";
+import type { Texture2D } from "./texture-2d.js";
 import type { EngineContext } from "../engine/engine.js";
 
 declare const dynamicTexture2DBrand: unique symbol;
@@ -115,7 +116,7 @@ export function createDynamicTexture(engine: EngineContext, width: number, heigh
         usage: TU.TEXTURE_BINDING | TU.COPY_DST | TU.RENDER_ATTACHMENT,
     });
 
-    const samplerDesc: GPUSamplerDescriptor = {
+    const samplerDesc: TextureSamplerDescriptor = {
         addressModeU: options.addressModeU ?? "clamp-to-edge",
         addressModeV: options.addressModeV ?? "clamp-to-edge",
         minFilter: options.minFilter ?? "linear",
@@ -135,7 +136,7 @@ export function createDynamicTexture(engine: EngineContext, width: number, heigh
     // compile-time dead-code elimination. The latest source is stamped by
     // updateDynamicTexture.
     if (engine._dlr) {
-        const rec: Texture2DRecoverySource = {
+        engine._dlr.t(tex, {
             kind: "dynamic",
             width,
             height,
@@ -145,8 +146,7 @@ export function createDynamicTexture(engine: EngineContext, width: number, heigh
             source: null,
             flipY: true,
             premultipliedAlpha: false,
-        };
-        tex._recoverySource = rec;
+        });
     }
     return tex as DynamicTexture2D;
 }

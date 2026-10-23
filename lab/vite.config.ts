@@ -1,8 +1,19 @@
 import { defineConfig, type Plugin } from "vite";
-import { resolve } from "path";
-import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from "fs";
+import { extname, isAbsolute, relative, resolve, sep } from "path";
+import { createReadStream, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { spawn } from "child_process";
+import basicSsl from "@vitejs/plugin-basic-ssl";
 import { mapBabylonImport, type CompatTarget } from "../packages/babylon-lite-compat/src/bundler-resolve.js";
+
+/**
+ * On-device WebXR testing (e.g. Quest 3) requires a secure context, which for any
+ * non-localhost origin means HTTPS. Use `pnpm dev:lab:https` to serve the lab over HTTPS
+ * with a self-signed cert (via @vitejs/plugin-basic-ssl) and bind to all network
+ * interfaces so the headset can reach `https://<this-machine-ip>:5174` over the
+ * LAN — accept the one-time cert warning in the Quest Browser. Left off by
+ * default so the normal `pnpm dev:lab` flow stays plain HTTP on localhost.
+ */
+const LAB_HTTPS = process.argv.some((arg, index) => arg === "--mode=https" || (arg === "--mode" && process.argv[index + 1] === "https"));
 
 interface DemoConfigEntry {
     slug: string;
@@ -161,6 +172,112 @@ function pagesDemoPlugin(): Plugin {
     };
 }
 
+const TROGIR_MOUNT = "/local-gs/trogir/";
+const TROGIR_SETUP = 'GS_STREAM_ASSET_ROOT="<dataset-directory>" pnpm --dir lab dev';
+
+/** Opt-in, read-only mount for the loose Trogir SOG dataset used by the streaming demo. */
+function gaussianSplatAssetPlugin(): Plugin {
+    const configuredRoot = process.env.GS_STREAM_ASSET_ROOT;
+    let realRoot: string | null = null;
+    if (configuredRoot) {
+        try {
+            const candidate = realpathSync(configuredRoot);
+            if (statSync(candidate).isDirectory()) {
+                realRoot = candidate;
+            }
+        } catch {
+            // Requests return a path-free setup error below.
+        }
+    }
+
+    return {
+        name: "local-gaussian-splat-assets",
+        enforce: "pre",
+        configureServer(server) {
+            server.middlewares.use((req, res, next) => {
+                const rawPath = (req.url ?? "").split("?")[0];
+                if (rawPath !== TROGIR_MOUNT.slice(0, -1) && !rawPath.startsWith(TROGIR_MOUNT)) {
+                    next();
+                    return;
+                }
+                if (req.method !== "GET" && req.method !== "HEAD") {
+                    res.statusCode = 405;
+                    res.setHeader("Allow", "GET, HEAD");
+                    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+                    res.end("Method Not Allowed: the local Gaussian splat mount is read-only.");
+                    return;
+                }
+                res.setHeader("Cache-Control", "no-cache");
+                if (!realRoot) {
+                    res.statusCode = 404;
+                    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+                    res.end(`Local Trogir dataset is unavailable. Start the lab with:\n${TROGIR_SETUP}`);
+                    return;
+                }
+
+                let requested: string;
+                try {
+                    requested = decodeURIComponent(rawPath.slice(TROGIR_MOUNT.length));
+                } catch {
+                    res.statusCode = 400;
+                    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+                    res.end("Bad Request: malformed asset URL.");
+                    return;
+                }
+                const segments = requested.split("/");
+                if (
+                    !requested ||
+                    requested.includes("\0") ||
+                    requested.includes("\\") ||
+                    isAbsolute(requested) ||
+                    segments.some((segment) => segment === ".." || segment === "." || !segment)
+                ) {
+                    res.statusCode = 400;
+                    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+                    res.end("Bad Request: unsafe asset path.");
+                    return;
+                }
+
+                let realFile: string;
+                try {
+                    realFile = realpathSync(resolve(realRoot, ...segments));
+                    const fromRoot = relative(realRoot, realFile);
+                    if (!fromRoot || fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot) || !statSync(realFile).isFile()) {
+                        throw new Error("outside mount");
+                    }
+                } catch {
+                    res.statusCode = 404;
+                    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+                    res.end("Local Trogir asset not found.");
+                    return;
+                }
+
+                const mime =
+                    extname(realFile).toLowerCase() === ".json"
+                        ? "application/json; charset=utf-8"
+                        : extname(realFile).toLowerCase() === ".webp"
+                          ? "image/webp"
+                          : "application/octet-stream";
+                res.statusCode = 200;
+                res.setHeader("Content-Type", mime);
+                res.setHeader("Content-Length", String(statSync(realFile).size));
+                if (req.method === "HEAD") {
+                    res.end();
+                    return;
+                }
+                const source = createReadStream(realFile);
+                source.on("error", () => {
+                    if (!res.headersSent) {
+                        res.statusCode = 404;
+                    }
+                    res.destroy();
+                });
+                source.pipe(res);
+            });
+        },
+    };
+}
+
 /** Serve reference images from the repo-root reference/lite/ directory */
 function serveReferenceImages(): Plugin {
     return {
@@ -237,9 +354,9 @@ function serveReferenceImages(): Plugin {
                         return;
                     }
                 }
-                // Serve the generated aggregate bundle manifest. The tracked source of
-                // truth is one file per scene under public/bundle/manifest/; the single
-                // aggregate manifest.json is a (gitignored) build output. On a fresh
+                // Serve the generated aggregate bundle manifest. It is built from one
+                // file per scene under public/bundle/manifest/; the single aggregate
+                // manifest.json is a (gitignored) build output. On a fresh
                 // checkout it hasn't been built yet, so synthesize it on the fly from the
                 // per-scene files so the Bundle tab is populated without a full build.
                 if (url === "/bundle/manifest.json") {
@@ -324,6 +441,7 @@ function serveReferenceImages(): Plugin {
                         ".bin": "application/octet-stream",
                         ".glb": "model/gltf-binary",
                         ".env": "application/octet-stream",
+                        ".mp3": "audio/mpeg",
                         ".wad": "application/octet-stream",
                         ".txt": "text/plain; charset=utf-8",
                         ".md": "text/markdown; charset=utf-8",
@@ -362,7 +480,7 @@ function serveReferenceImages(): Plugin {
                             return null;
                         }
                     };
-                    // Newest mtime across the tracked per-scene manifest files, used as a
+                    // Newest mtime across the per-scene manifest files, used as a
                     // fallback when the generated aggregate manifest.json isn't built yet.
                     const dirNewestMtime = (dir: string): number | null => {
                         try {
@@ -842,7 +960,7 @@ function compatScenesPlugin(): Plugin {
 }
 
 export default defineConfig({
-    plugins: [pagesDemoPlugin(), compatScenesPlugin(), serveReferenceImages(), apiDocsPlugin(), tabContentPlugin()],
+    plugins: [pagesDemoPlugin(), compatScenesPlugin(), gaussianSplatAssetPlugin(), serveReferenceImages(), apiDocsPlugin(), tabContentPlugin(), ...(LAB_HTTPS ? [basicSsl()] : [])],
     optimizeDeps: {
         // BJS uses prototype-patching side-effect imports (e.g. abstractEngine.dom.js).
         // babylon-lite uses ?raw WGSL imports that esbuild can't handle.
@@ -875,6 +993,9 @@ export default defineConfig({
         // interactive dev server keeps Vite's default auto-increment behavior.
         port: Number(process.env.LAB_DEV_PORT) || 5174,
         strictPort: !!process.env.LAB_DEV_PORT,
+        // With LAB_HTTPS, expose the server on the LAN so an XR headset can reach
+        // it by IP; @vitejs/plugin-basic-ssl supplies the self-signed cert.
+        ...(LAB_HTTPS ? { host: true } : {}),
         watch: {
             // On-demand tab generation writes many files under the Vite root that
             // would otherwise churn the single-threaded dev server (stalling the

@@ -35,9 +35,11 @@ import {
     measurePage,
     LITE_BUNDLE_TARGET,
     NAME_POLYFILL,
+    litePackageResolverPlugin,
 } from "./bundle-scenes-core";
 import { wgslMinifyPlugin } from "./wgsl-minify-plugin";
 import { fetchDemoAssets } from "./demo-fetchers";
+import { demoOwnsBundleFile } from "./demo-bundle-name";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGES_SRC = resolve(ROOT, "pages");
@@ -51,7 +53,10 @@ const TETRIS_SRC = resolve(labDir, "public/tetris");
 const PLATFORMER_SRC = resolve(labDir, "public/platformer");
 const SANDBLOX_SRC = resolve(labDir, "public/sandblox");
 const RACER_SRC = resolve(labDir, "public/racer");
+const ANTIGRAVITY_RACER_SRC = resolve(labDir, "public/antigravity-racer");
+const PLAYROOM_SRC = resolve(labDir, "public/playroom");
 const SCREEN_SPACE_EFFECTS_SRC = resolve(labDir, "public/screen-space-effects");
+const MESH_LOD_SRC = resolve(labDir, "public/mesh-lod");
 const DRACO_FILES = ["draco_decoder.js", "draco_decoder.wasm"];
 
 const _demoRequire = createRequire(import.meta.url);
@@ -118,7 +123,7 @@ function escapeHtml(value: string): string {
 }
 
 function rewriteDemoHtmlForBundle(html: string): string {
-    return html.replace(/(["'])\/(?:lite\/)?bundle\/demos\//g, "$1./");
+    return html.replace(/(["'])\.?\/(?:lite\/)?bundle\/demos\//g, "$1./");
 }
 
 /**
@@ -202,6 +207,9 @@ function copyRequiredDir(source: string, target: string, label: string): void {
 }
 
 function copyDemoRuntimeAssets(demos: DemoConfigEntry[]): void {
+    if (demos.some((demo) => demo.slug === "ocean")) {
+        cpSync(resolve(labDir, "lite", "demo-ocean-reference.html"), resolve(demosDir, "demo-ocean-reference.html"));
+    }
     if (demos.some((demo) => demo.slug === "doom")) {
         if (!existsSync(DOOM_SRC)) {
             throw new Error(`Missing DOOM assets at ${DOOM_SRC}`);
@@ -253,10 +261,37 @@ function copyDemoRuntimeAssets(demos: DemoConfigEntry[]): void {
         copyRequiredDir(SCREEN_SPACE_EFFECTS_SRC, resolve(demosDir, "screen-space-effects"), "Screen-space effects");
     }
 
+    if (demos.some((demo) => demo.slug === "antigravity-racer")) {
+        const required = ["track/road-straight.png", "track/road-curve.png", "track/road-emissive.png", "track/boost-arrow.png", "rhs-x.glb", "rock.glb"];
+        for (const file of required) {
+            if (!existsSync(resolve(ANTIGRAVITY_RACER_SRC, file))) {
+                throw new Error(`Missing Antigravity Racer asset ${file} at ${ANTIGRAVITY_RACER_SRC}`);
+            }
+        }
+        copyRequiredDir(ANTIGRAVITY_RACER_SRC, resolve(demosDir, "antigravity-racer"), "Antigravity Racer");
+    }
+
+    if (demos.some((demo) => demo.slug === "playroom")) {
+        copyRequiredDir(PLAYROOM_SRC, resolve(demosDir, "playroom"), "The Playroom");
+    }
+
+    if (demos.some((demo) => demo.slug === "mesh-lod")) {
+        // The demo fetches its source GLB from BabylonJS/Assets; only the
+        // committed `.mlod` primitives and stats are served locally.
+        copyRequiredDir(MESH_LOD_SRC, resolve(demosDir, "mesh-lod"), "MeshLoD");
+    }
+
     if (demos.some((demo) => demo.slug === "bath-day")) {
         const glb = resolve(labDir, "public", "bath_day.glb");
         if (existsSync(glb)) {
             cpSync(glb, resolve(demosDir, "bath_day.glb"));
+        }
+    }
+
+    if (demos.some((demo) => demo.slug === "calculator")) {
+        const glb = resolve(labDir, "public", "models", "Calculator.glb");
+        if (existsSync(glb)) {
+            cpSync(glb, resolve(demosDir, "Calculator.glb"));
         }
     }
 
@@ -294,12 +329,13 @@ function writeDemoHtml(demos: DemoConfigEntry[], manifest: Record<string, DemoMa
 }
 
 function demoRequiresReady(slug: string): boolean {
-    return slug === "racer";
+    return slug === "racer" || slug === "ocean" || slug === "playroom";
 }
 
-export async function buildDemo(slug: string): Promise<void> {
+export async function buildDemo(slug: string, options: { debug?: boolean } = {}): Promise<void> {
     const demoOutDir = resolve(demosDir, slug);
     rmSync(demoOutDir, { recursive: true, force: true });
+    const debug = options.debug === true;
 
     // Standalone demos have no import map, so Havok can't be externalized to
     // /vendor/havok.js like scenes do — bundle its ESM build inline instead.
@@ -311,7 +347,7 @@ export async function buildDemo(slug: string): Promise<void> {
         base: "./",
         publicDir: false,
         logLevel: "warn",
-        plugins: [wgslMinifyPlugin({ mangle: false }), terserPropertyManglePlugin(), minimalVitePreloadPlugin()],
+        plugins: [litePackageResolverPlugin(srcDir), ...(debug ? [] : [wgslMinifyPlugin(), terserPropertyManglePlugin()]), minimalVitePreloadPlugin()],
         resolve: {
             // Demos resolve `babylon-lite` to the TS SOURCE (not `build/lib`) on purpose:
             // demos have no bundle-size ceilings, and using source keeps the dev iteration
@@ -325,8 +361,8 @@ export async function buildDemo(slug: string): Promise<void> {
             outDir: demoOutDir,
             emptyOutDir: true,
             target: LITE_BUNDLE_TARGET,
-            minify: "esbuild",
-            sourcemap: "hidden",
+            minify: debug ? false : "esbuild",
+            sourcemap: debug ? true : "hidden",
             modulePreload: { polyfill: false, resolveDependencies: () => [] },
             rollupOptions: {
                 input: { [slug]: resolve(labDir, `lite/src/demos/${slug}.ts`) },
@@ -341,16 +377,16 @@ export async function buildDemo(slug: string): Promise<void> {
             },
         },
         // Demos may spawn a module Web Worker via `new Worker(new URL("./x.ts", import.meta.url), { type: "module" })`
-        // (see the offscreen demo). Build the worker with the same WGSL/property-mangle
+        // (see the offscreen demo). Build the worker with the same tagged-WGSL/property-mangle
         // pipeline and emit its chunks prefixed with the slug so the copy + stale-cleanup
-        // logic below picks them up alongside the main entry. WGSL identifier mangling is
-        // disabled (mangle: false) because the worker's aggressive code-splitting can place
-        // a shader struct declaration and its usages in different chunks, which per-chunk
-        // mangling would rename inconsistently (e.g. "struct member wp not found").
+        // logic below picks them up alongside the main entry.
         worker: {
             format: "es",
-            plugins: () => [wgslMinifyPlugin({ mangle: false }), terserPropertyManglePlugin()],
+            plugins: () => [litePackageResolverPlugin(srcDir), ...(debug ? [] : [wgslMinifyPlugin(), terserPropertyManglePlugin()])],
             rollupOptions: {
+                // Match the parent demo graph: optional vendor runtimes stay external unless
+                // the demo explicitly opts into the inline Havok alias above.
+                external: (id: string) => id !== "@babylonjs/havok" && isLiteBundleExternal(id),
                 output: {
                     entryFileNames: `${slug}-worker-[hash].js`,
                     chunkFileNames: `${slug}-worker-[name]-[hash].js`,
@@ -368,13 +404,14 @@ export async function buildDemo(slug: string): Promise<void> {
     mkdirSync(demosDir, { recursive: true });
     const newNames = new Set<string>();
     for (const f of readdirSync(demoOutDir)) {
-        if (f.endsWith(".map")) continue;
+        if (!debug && f.endsWith(".map")) continue;
         if (!statSync(resolve(demoOutDir, f)).isFile()) continue;
         newNames.add(f);
         writeFileSync(resolve(demosDir, f), readFileSync(resolve(demoOutDir, f)));
     }
+    const demoSlugs = [...loadDemosConfig().map((demo) => demo.slug), ...DEMO_SUPPORT_BUNDLES];
     for (const existing of readdirSync(demosDir)) {
-        if ((existing === `${slug}.js` || existing.startsWith(`${slug}-`)) && !newNames.has(existing)) {
+        if (demoOwnsBundleFile(existing, slug, demoSlugs) && !newNames.has(existing)) {
             rmSync(resolve(demosDir, existing));
         }
     }
@@ -398,7 +435,7 @@ export async function buildDemoSupportBundles(): Promise<void> {
  * skipped by default. Pass `{ measure: true }` to measure this demo and refresh
  * only its entry in demos-manifest.json.
  */
-export async function buildSingleDemo(slug: string, options: { measure?: boolean } = {}): Promise<void> {
+export async function buildSingleDemo(slug: string, options: { measure?: boolean; debug?: boolean } = {}): Promise<void> {
     const demos = loadDemosConfig();
     const demo = demos.find((d) => d.slug === slug);
     if (!demo) {
@@ -411,7 +448,7 @@ export async function buildSingleDemo(slug: string, options: { measure?: boolean
 
     mkdirSync(demosDir, { recursive: true });
     console.log(`Building demo ${slug}...`);
-    await buildDemo(slug);
+    await buildDemo(slug, { debug: options.debug });
     copyDemoRuntimeAssets([demo]);
 
     if (options.measure) {

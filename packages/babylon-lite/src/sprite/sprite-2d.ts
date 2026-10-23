@@ -12,7 +12,9 @@ import { F32 } from "../engine/typed-arrays.js";
 import type { SpriteAtlas } from "./shared/sprite-atlas.js";
 import { resolveSpriteFrame } from "./shared/sprite-atlas.js";
 import type { Sprite2DCustomShader } from "./sprite-custom-shader.js";
+import type { SpriteVertexExtension } from "./sprite-fx-hook.js";
 import { _getSpriteFxHook } from "./sprite-fx-hook.js";
+import type { Sprite2DYSortState } from "./sprite-2d-y-sort.js";
 import type { SpriteBlendDescriptor } from "./sprite-blend.js";
 import { spriteBlendAlpha } from "./sprite-blend.js";
 
@@ -110,6 +112,8 @@ export interface Sprite2DLayer {
      * "is wide" flag (drives the shader permutation key + the prologue `+ in.iUvOffset`).
      */
     _uvScrollAttr?: GPUVertexAttribute;
+    /** @internal Optional instance-layout descriptor installed by an opt-in extension. */
+    _vertexExtension?: SpriteVertexExtension;
     /**
      * @internal Opt-in coverage-gamma value (glyph "stem darkening"); set only via
      * {@link setSprite2DCoverageGamma}. **Absent** (`undefined`, treated as `1` = no-op) on plain
@@ -126,10 +130,10 @@ export interface Sprite2DLayer {
 
     /** @internal Capacity of the per-instance buffer (in sprites). */
     _capacity: number;
-    /** @internal Per-instance stride in floats; 13 for pure-2D, 14 for depth-hosted. */
-    readonly _instanceFloatsPerSprite: number;
-    /** @internal Per-instance stride in bytes; 52 for pure-2D, 56 for depth-hosted. */
-    readonly _instanceStrideBytes: number;
+    /** @internal Per-instance stride in floats; base 13/14 plus enabled extensions. */
+    _instanceFloatsPerSprite: number;
+    /** @internal Per-instance stride in bytes; base 52/56 plus enabled extensions. */
+    _instanceStrideBytes: number;
     /** @internal Per-instance CPU staging buffer; layout = `_instanceFloatsPerSprite` per sprite. */
     _instanceData: Float32Array;
     /**
@@ -151,12 +155,36 @@ export interface Sprite2DLayer {
     _dirtyMax: number;
     /** @internal Optional hooks installed by the opt-in handle module. */
     _handleHooks?: Sprite2DIndexHandleHooks;
+    /** @internal Optional renderer-owned ordering state installed by `enableSprite2DYSort`. */
+    _ySortState?: Sprite2DYSortState;
 }
 
 /** @internal Lazy hooks used by the opt-in Handle API to track swap-removes. */
 export interface Sprite2DIndexHandleHooks {
     readonly removeIndex: (index: number, last: number) => void;
     readonly clear: () => void;
+}
+
+/** @internal Opaque hooks implemented by the opt-in Sprite2D Y-sort module. */
+export interface Sprite2DYSortHook {
+    readonly add: (layer: Sprite2DLayer, index: number) => void;
+    readonly remove: (layer: Sprite2DLayer, index: number, last: number) => void;
+    readonly clear: (layer: Sprite2DLayer, previousCount: number) => void;
+    readonly dirty: (layer: Sprite2DLayer, lo: number, hi: number) => void;
+    readonly upload: (device: GPUDevice, layer: Sprite2DLayer, instanceBuffer: GPUBuffer, uploadedVersion: number) => number | undefined;
+    readonly drawOrder: (layer: Sprite2DLayer) => Uint32Array | null;
+}
+
+let _sprite2DYSortHook: Sprite2DYSortHook | null = null;
+
+/** @internal Install the optional Sprite2D GPU-order hook. */
+export function _registerSprite2DYSortHook(hook: Sprite2DYSortHook): void {
+    _sprite2DYSortHook = hook;
+}
+
+/** @internal Return the optional Sprite2D GPU-order hook. */
+export function _getSprite2DYSortHook(): Sprite2DYSortHook | null {
+    return _sprite2DYSortHook;
 }
 
 /** Per-sprite init record passed to `addSprite2DIndex` / `updateSprite2DIndex`. */
@@ -206,12 +234,15 @@ export interface Sprite2DProps {
  * ```
  *
  * The opt-in per-sprite UV-scroll feature (`setSprite2DUvOffset`, see `sprite-2d-uvscroll.ts`)
- * appends two more floats (`uvOffset.xy`) *after* the base layout, orthogonally to depth:
+ * appends two more floats (`uvOffset.xy`) after the current layout, orthogonally to depth.
+ * Without instance parameters:
  * ```
  *   pure-2D + uvScroll  (15 floats = 60 bytes):  [13..14] uvOffset.xy (float32x2 @ offset 52)
  *   depth   + uvScroll  (16 floats = 64 bytes):  [14..15] uvOffset.xy (float32x2 @ offset 56)
  * ```
- * The depth Z stays at slot [13]; uvOffset is appended after it. Non-scroll layers carry no
+ * With instance parameters enabled first, UV starts at byte offset 68/72 and the combined
+ * stride is 76/80 bytes. If UV is enabled first, its offset stays 52/56 and parameters append
+ * after it. `_uvScrollAttr.offset` is authoritative. Depth Z stays at slot [13]. Non-scroll layers carry no
  * uvOffset slot and ship none of the widening (the wide layout lives entirely in the opt-in module).
  *
  * Visibility (`visible: false`) is implemented by zeroing slots [2..3]; the sprite's true
@@ -477,6 +508,7 @@ function markDirty(layer: Sprite2DLayer, lo: number, hi: number): void {
         }
     }
     layer._version = (layer._version + 1) | 0;
+    _getSprite2DYSortHook()?.dirty(layer, lo, hi);
 }
 
 /** @internal Mark a dirty sprite range + bump version. Exposed for the opt-in uvScroll module. */
@@ -494,7 +526,9 @@ export function addSprite2DIndex(layer: Sprite2DLayer, props: Sprite2DProps): nu
         growCapacity(layer, idx + 1);
     }
     writeInstance(layer, idx, props, null);
+    layer._vertexExtension?._initInstance(layer._instanceData, idx * layer._instanceFloatsPerSprite);
     _setSprite2DCount(layer, layer.count + 1);
+    _getSprite2DYSortHook()?.add(layer, idx);
     markDirty(layer, idx, idx + 1);
     return idx;
 }
@@ -526,6 +560,7 @@ export function removeSprite2DIndex(layer: Sprite2DLayer, index: number): void {
     layer._savedSize[last * SAVED_SIZE_FLOATS_PER_SPRITE] = 0;
     layer._savedSize[last * SAVED_SIZE_FLOATS_PER_SPRITE + 1] = 0;
     _setSprite2DCount(layer, last);
+    _getSprite2DYSortHook()?.remove(layer, index, last);
     markDirty(layer, index, index + 1);
 }
 
@@ -540,6 +575,7 @@ export function clearSprite2DLayer(layer: Sprite2DLayer): void {
     }
     layer._savedSize.fill(0, 0, count * SAVED_SIZE_FLOATS_PER_SPRITE);
     _setSprite2DCount(layer, 0);
+    _getSprite2DYSortHook()?.clear(layer, count);
     layer._version = (layer._version + 1) | 0;
 }
 

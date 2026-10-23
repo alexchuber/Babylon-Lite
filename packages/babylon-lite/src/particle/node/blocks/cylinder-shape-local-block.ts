@@ -1,7 +1,7 @@
 import { randomRange } from "../../../math/random-range.js";
 import { transformNormalToRef } from "../../../math/mat4-transform.js";
-import { mat4Invert } from "../../../math/mat4-invert.js";
-import { mat4Identity } from "../../../math/mat4-identity.js";
+import { invertMat4 } from "../../../math/invert-mat4.js";
+import { createIdentityMat4 } from "../../../math/create-identity-mat4.js";
 import type { Vec3 } from "../../../math/types.js";
 import { finishLocalPosition } from "../npe-local-position.js";
 import type { NpeBlockEvaluator } from "../npe-build.js";
@@ -9,12 +9,11 @@ import type { NpeBlockEvaluator } from "../npe-build.js";
 /** Emitter-local `CylinderShapeBlock`. */
 export const cylinderShapeLocalBlock: NpeBlockEvaluator = {
     build(block, ctx) {
-        const system = ctx.state.system!;
-        const buffer = ctx.state.buffer!;
-        const emitterWorldMatrix = ctx.state.emitterWorldMatrix;
-        const emitterX = ctx.state.emitter.x;
-        const emitterY = ctx.state.emitter.y;
-        const emitterZ = ctx.state.emitter.z;
+        const state = ctx.state;
+        const system = state.system!;
+        const buffer = state.buffer!;
+        const emitterWorldMatrix = state.emitterWorldMatrix;
+        const emitter = state.emitter;
         const radiusGetter = ctx.input(block, "radius", () => 1);
         const heightGetter = ctx.input(block, "height", () => 1);
         const radiusRangeGetter = ctx.input(block, "radiusRange", () => 1);
@@ -22,7 +21,10 @@ export const cylinderShapeLocalBlock: NpeBlockEvaluator = {
         const direction1Getter = ctx.input(block, "direction1", () => ({ x: 0, y: 1, z: 0 }));
         const direction2Getter = ctx.input(block, "direction2", () => ({ x: 0, y: 1, z: 0 }));
         const explicit = ctx.isConnected(block, "direction1") && ctx.isConnected(block, "direction2");
-        const emitterInverseWorldMatrix = explicit ? null : (mat4Invert(emitterWorldMatrix) ?? mat4Identity());
+        const emitterInverseWorldMatrix = explicit ? null : (invertMat4(emitterWorldMatrix) ?? createIdentityMat4());
+        if (emitterInverseWorldMatrix) {
+            state.emitterInverseWorldMatrices?.push({ inverse: emitterInverseWorldMatrix });
+        }
         const scratch: Vec3 = { x: 0, y: 0, z: 0 };
         let birthX = 0;
         let birthY = 0;
@@ -58,9 +60,9 @@ export const cylinderShapeLocalBlock: NpeBlockEvaluator = {
                 y = randomRange(minY, direction2.y);
                 z = randomRange(minZ, direction2.z);
             } else {
-                x = birthX - emitterX;
-                y = birthY - emitterY;
-                z = birthZ - emitterZ;
+                x = birthX - emitter.x;
+                y = birthY - emitter.y;
+                z = birthZ - emitter.z;
                 let length = Math.sqrt(x * x + y * y + z * z);
                 if (length !== 0 && length !== 1) {
                     x /= length;

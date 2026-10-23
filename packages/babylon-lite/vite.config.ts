@@ -119,11 +119,21 @@ function emitPackageJson(): Plugin {
                 jsdelivr: "./dist/index.js",
                 unpkg: "./dist/index.js",
                 sideEffects: false,
+                // The single dependency is types-only: the rolled-up index.d.ts starts with
+                // `/// <reference types="webxr" />` because the public WebXR API
+                // (`XrSessionContext`, input/hand/teleport helpers) references ambient WebXR
+                // globals (`XRSession`, `XRFrame`, `XRView`, `XRReferenceSpace`,
+                // `XRProjectionLayer`, `XRSubImage`, ...). Installing it with the package lets
+                // strict consumers that never use XR (or set `compilerOptions.types`) type-check.
+                // The draft `XRGPUBinding` has no shipping `@types` and stays inlined.
+                dependencies: {
+                    "@types/webxr": "^0.5.0",
+                },
                 // A small, curated allowlist of STRICTLY-OPTIONAL peer dependencies. Every
                 // transitive *runtime* dependency is still bundled as an opaque implementation
-                // detail (there is no `dependencies` field), so a plain `npm i @babylonjs/lite`
-                // and CDN usage stay self-contained. These peers are never bundled and — being
-                // optional — are never auto-installed or warned about by npm/pnpm/yarn:
+                // detail, so a plain `npm i @babylonjs/lite` and CDN usage stay self-contained.
+                // These peers are never bundled and — being optional — are never auto-installed
+                // or warned about by npm/pnpm/yarn:
                 //   - @babylonjs/havok: the physics module is injected by the caller into
                 //     `createHavokWorld(scene, hknp)`; Lite never imports it. This entry only
                 //     advertises the supported version range for consumers who enable physics.
@@ -456,6 +466,22 @@ function relocateDts(): Plugin {
 }
 
 /**
+ * Keep the nominal WGSL brand as a source-only enforcement mechanism. Published
+ * declarations expose ordinary strings so this remains API-compatible for consumers.
+ * Also prefix the rollup with `/// <reference types="webxr" />`: the public WebXR API
+ * references ambient XR globals (`XRSession`, `XRFrame`, ...), and the directive loads
+ * `@types/webxr` (a published dependency) even for consumers whose `compilerOptions.types`
+ * omits it.
+ */
+function exposeWgslSourceAsString(content: string): string {
+    const alias = /^declare type WgslSource = string & \{\s*\};\r?\n/m;
+    if (!alias.test(content)) {
+        throw new Error("Could not find the trimmed WgslSource declaration");
+    }
+    return '/// <reference types="webxr" />\n' + content.replace(alias, "").replace(/\bWgslSource\b/g, "string");
+}
+
+/**
  * Every first-party source module, keyed by its `src`-relative path without
  * extension (forward-slashed). Used as the Rollup input map for the `lib` build so
  * each module becomes its own entry chunk — reproducing `preserveModules`-style
@@ -465,6 +491,10 @@ function relocateDts(): Plugin {
  */
 function enumerateLibEntries(): Record<string, string> {
     const entries: Record<string, string> = {};
+    // Entry traversal also determines the emitted root barrel's import order.
+    // Append opt-in modules so their dependencies cannot reorder established output
+    // for applications that do not use those modules.
+    const extensionEntries: Record<string, string> = {};
     const walk = (dir: string): void => {
         for (const name of readdirSync(dir)) {
             const full = resolve(dir, name);
@@ -479,11 +509,15 @@ function enumerateLibEntries(): Record<string, string> {
                 .slice(SRC_DIR.length + 1)
                 .replace(/\\/g, "/")
                 .replace(/\.ts$/, "");
-            entries[key] = full;
+            if (key.startsWith("accessibility/")) {
+                extensionEntries[key] = full;
+            } else {
+                entries[key] = full;
+            }
         }
     };
     walk(SRC_DIR);
-    return entries;
+    return { ...entries, ...extensionEntries };
 }
 
 /**
@@ -571,21 +605,26 @@ export default defineConfig(({ mode }) => {
             plugins: [
                 stripManifoldNodeRequire(),
                 liteErrorPlugin(),
-                // `mangle: false` — strip WGSL whitespace/comments but do NOT short-rename
-                // identifiers (the per-chunk mangler is unsafe across the package's many
-                // code-split chunks). `templates: false` — only minify `?raw` `.wgsl` files,
-                // not inline backtick-template WGSL: this output is not esbuild-minified, so
-                // the template minifier would corrupt raw source, and the scene/demo harness
-                // already minifies inline templates once when it bundles this output.
-                wgslMinifyPlugin({ mangle: false, templates: false }),
+                // Explicit `wgsl` tagged templates are safely minified from their
+                // TypeScript AST before emit; unrelated JavaScript templates are untouched.
+                wgslMinifyPlugin(),
                 minifyBrowserChunks(),
                 stripInlinedWorkerSourcemap(),
                 dts({
-                    rollupTypes: !isWatch,
+                    bundleTypes: !isWatch,
                     tsconfigPath: resolve(__dirname, "tsconfig.json"),
-                    outDir: DIST_OUT_DIR,
+                    outDirs: DIST_OUT_DIR,
                 }),
-                ...(isWatch ? [] : [trimInternalDts({ outDir: DIST_OUT_DIR, projectFolder: __dirname }), relocateDts()]),
+                ...(isWatch
+                    ? []
+                    : [
+                          trimInternalDts({
+                              outDir: DIST_OUT_DIR,
+                              projectFolder: __dirname,
+                              transform: exposeWgslSourceAsString,
+                          }),
+                          relocateDts(),
+                      ]),
             ],
         };
     }
@@ -629,13 +668,6 @@ export default defineConfig(({ mode }) => {
             format: "es" as const,
             plugins: () => [minifyInlinedWorker()],
         },
-        plugins: [
-            stripManifoldNodeRequire(),
-            liteErrorPlugin(),
-            wgslMinifyPlugin({ mangle: false, templates: false }),
-            stripInlinedWorkerSourcemap(),
-            emitPackageJson(),
-            emitThirdPartyNotices(),
-        ],
+        plugins: [stripManifoldNodeRequire(), liteErrorPlugin(), wgslMinifyPlugin(), stripInlinedWorkerSourcemap(), emitPackageJson(), emitThirdPartyNotices()],
     };
 });

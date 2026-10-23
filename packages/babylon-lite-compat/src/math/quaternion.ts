@@ -5,11 +5,19 @@
  * Babylon Lite `{ x, y, z, w }` quaternion shape used on transform nodes.
  */
 
-import { mat4FromQuatInto, quatFromRotationMatrix } from "babylon-lite";
+import {
+    writeMat4FromQuatIntoBuffer,
+    createQuatFromRotationMat4,
+    writeMat4FromLookDirectionLHIntoBuffer,
+    writeMat4FromLookDirectionRHIntoBuffer,
+    writeQuatFromRotationMat4IntoRef,
+} from "babylon-lite";
 import type { Mat4 } from "babylon-lite";
 
 import { Vector3 } from "./vector.js";
 import type { Matrix } from "./matrix.js";
+
+let lookDirectionRotationScratch: Float32Array | undefined;
 
 export class Quaternion {
     public constructor(
@@ -66,10 +74,10 @@ export class Quaternion {
 
     /**
      * Babylon.js `Quaternion.fromRotationMatrix` — update this quaternion in place
-     * from the rotation part of `matrix`. Backed by Lite's `quatFromRotationMatrix`.
+     * from the rotation part of `matrix`. Backed by Lite's `createQuatFromRotationMat4`.
      */
     public fromRotationMatrix(matrix: Matrix): this {
-        const q = quatFromRotationMatrix(matrix.m as unknown as Mat4);
+        const q = createQuatFromRotationMat4(matrix.m as unknown as Mat4);
         this.x = q.x;
         this.y = q.y;
         this.z = q.z;
@@ -82,7 +90,7 @@ export class Quaternion {
      * into `result`.
      */
     public toRotationMatrix<T extends Matrix>(result: T): T {
-        mat4FromQuatInto(result.m, this.x, this.y, this.z, this.w);
+        writeMat4FromQuatIntoBuffer(result.m, this.x, this.y, this.z, this.w);
         return result;
     }
 
@@ -136,7 +144,7 @@ export class Quaternion {
 
     /**
      * Babylon.js `Quaternion.FromRotationMatrix` — create a new quaternion from the
-     * rotation part of `matrix`. Backed by Lite's `quatFromRotationMatrix`.
+     * rotation part of `matrix`. Backed by Lite's `createQuatFromRotationMat4`.
      */
     public static FromRotationMatrix(matrix: Matrix): Quaternion {
         const result = new Quaternion();
@@ -146,15 +154,43 @@ export class Quaternion {
 
     /**
      * Babylon.js `Quaternion.FromRotationMatrixToRef` — write the rotation part of
-     * `matrix` into `result`. Backed by Lite's `quatFromRotationMatrix`.
+     * `matrix` into `result`. Backed by Lite's `createQuatFromRotationMat4`.
      */
     public static FromRotationMatrixToRef(matrix: Matrix, result: Quaternion): Quaternion {
-        const q = quatFromRotationMatrix(matrix.m as unknown as Mat4);
+        const q = createQuatFromRotationMat4(matrix.m as unknown as Mat4);
         result.x = q.x;
         result.y = q.y;
         result.z = q.z;
         result.w = q.w;
         return result;
+    }
+
+    /** Babylon.js `Quaternion.FromLookDirectionLH(forward, up)`. */
+    public static FromLookDirectionLH(forward: Vector3, up: Vector3): Quaternion {
+        return Quaternion.FromLookDirectionLHToRef(forward, up, new Quaternion());
+    }
+
+    /** Babylon.js `Quaternion.FromLookDirectionLHToRef(forward, up, result)`. */
+    public static FromLookDirectionLHToRef<T extends Quaternion>(forward: Vector3, up: Vector3, result: T): T {
+        const matrix = (lookDirectionRotationScratch ??= new Float32Array(16));
+        writeMat4FromLookDirectionLHIntoBuffer(matrix, forward, up);
+        return Quaternion._FromRotationStorageToRef(matrix, result);
+    }
+
+    /** Babylon.js `Quaternion.FromLookDirectionRH(forward, up)`. */
+    public static FromLookDirectionRH(forward: Vector3, up: Vector3): Quaternion {
+        return Quaternion.FromLookDirectionRHToRef(forward, up, new Quaternion());
+    }
+
+    /** Babylon.js `Quaternion.FromLookDirectionRHToRef(forward, up, result)`. */
+    public static FromLookDirectionRHToRef<T extends Quaternion>(forward: Vector3, up: Vector3, result: T): T {
+        const matrix = (lookDirectionRotationScratch ??= new Float32Array(16));
+        writeMat4FromLookDirectionRHIntoBuffer(matrix, forward, up);
+        return Quaternion._FromRotationStorageToRef(matrix, result);
+    }
+
+    private static _FromRotationStorageToRef<T extends Quaternion>(matrix: Float32Array, result: T): T {
+        return writeQuatFromRotationMat4IntoRef(matrix as unknown as Mat4, result);
     }
 
     public static FromEulerAngles(x: number, y: number, z: number): Quaternion {

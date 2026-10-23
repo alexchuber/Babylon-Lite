@@ -15,6 +15,16 @@ The reusable helper exists because most post-processes share the same shape:
 - one color output target;
 - optional alpha blending and normalized viewport/scissor.
 
+Mesh blending is deliberately implemented as a dedicated task rather than
+through `createPostProcessTask`: its tag input is `texture_2d<u32>`, every input
+uses exact `textureLoad`, it owns deterministic `rg8unorm` blue noise, and its
+quality/debug/base-color options specialize a large shader. The dedicated
+module remains fully tree-shakable and follows the same source/target,
+viewport, clear, alpha-mode, device-rebuild, and owned-internal-target
+conventions. See `55-mesh-blending.md` for the complete contract.
+
+The public [custom post-process adapter](custom-post-process.md) exposes this RenderTarget-based fullscreen path for application WGSL, additional color inputs, and explicit uniform updates. Built-in task factories keep their existing implementation and bundle cost.
+
 ## Public API Surface (types, functions, constants — full signatures)
 
 ```ts
@@ -144,6 +154,55 @@ export interface BloomPostProcessTask extends Task, PostProcessTaskSettings {
 
 export function createBloomPostProcessTask(config: BloomPostProcessTaskConfig, engine: EngineContext, scene?: SceneContext): BloomPostProcessTask;
 
+export enum MeshBlendQuality {
+    Low = 0,
+    Medium = 1,
+    High = 2,
+    Cinematic = 3,
+}
+
+export enum MeshBlendDepthType {
+    View = 0,
+    Screen = 1,
+}
+
+export enum MeshBlendDebugMode {
+    Off = 0,
+    PackedTag = 1,
+    CandidateDirectionDistance = 2,
+    SeamFade = 3,
+    RejectionReason = 4,
+    StageWork = 5,
+    Continuation = 6,
+    TinyObject = 7,
+    MultiTarget = 8,
+    TargetColor = 9,
+    ShadowAttenuation = 10,
+    ColorInterpolation = 11,
+    WorldPosition = 12,
+}
+
+export interface MeshBlendingPostProcessTaskConfig {
+    name?: string;
+    sourceTexture: RenderTarget;
+    meshBlendTagTexture: RenderTarget;
+    depthTexture: RenderTarget;
+    baseColorTexture?: RenderTarget | null;
+    targetTexture?: RenderTarget | null;
+    camera: Camera;
+    quality?: MeshBlendQuality;
+    depthType?: MeshBlendDepthType;
+    debugMode?: MeshBlendDebugMode;
+    radiusClasses?: readonly MeshBlendRadiusDefinition[];
+    slopeFactor?: number;
+    enabled?: boolean;
+    alphaMode?: PostProcessAlphaMode;
+    viewport?: NormalizedViewport | null;
+    clear?: boolean;
+}
+
+export function createMeshBlendingPostProcessTask(config: MeshBlendingPostProcessTaskConfig, engine: EngineContext, scene?: SceneContext): MeshBlendingPostProcessTask;
+
 export interface FrameGraphContextOptions {
     name?: string;
     clearColor?: GPUColorDict;
@@ -228,21 +287,25 @@ fn postProcessVertex(@builtin(vertex_index) vertexIndex: u32) -> PostProcessVert
     let p = positions[vertexIndex];
     var out: PostProcessVertexOutput;
     out.position = vec4f(p, 0.0, 1.0);
-    out.uv = p * 0.5 + vec2f(0.5, 0.5);
+    // V is flipped: clip space is +Y up, texture space is +Y down.
+    out.uv = vec2f(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
     return out;
 }
 
 @group(0) @binding(0) var sourceSampler: sampler;
 @group(0) @binding(1) var sourceTextureSampler: texture_2d<f32>;
 
-fn readPostProcessSource(position: vec2f) -> vec4f {
-    let dims = vec2f(textureDimensions(sourceTextureSampler));
-    let uv = (floor(position) + vec2f(0.5)) / dims;
-    return textureSampleLevel(sourceTextureSampler, sourceSampler, clamp(uv, vec2f(0.0), vec2f(1.0)), 0.0);
+fn samplePostProcessSource(uv: vec2f) -> vec4f {
+    return textureSample(sourceTextureSampler, sourceSampler, uv);
 }
 
-fn samplePostProcessSource(uv: vec2f) -> vec4f {
-    return textureSampleLevel(sourceTextureSampler, sourceSampler, clamp(uv, vec2f(0.0), vec2f(1.0)), 0.0);
+// Texel-snapped read. Takes a NORMALIZED uv, like samplePostProcessSource —
+// not a pixel coordinate — and clamps to the texel centres so a snapped fetch
+// cannot bleed outside the source.
+fn readPostProcessSource(uv: vec2f) -> vec4f {
+    let dims = vec2f(textureDimensions(sourceTextureSampler));
+    let p = clamp(floor(uv * dims) + vec2f(0.5), vec2f(0.5), dims - vec2f(0.5));
+    return textureSampleLevel(sourceTextureSampler, sourceSampler, p / dims, 0);
 }
 
 // user fragmentWGSL must define:

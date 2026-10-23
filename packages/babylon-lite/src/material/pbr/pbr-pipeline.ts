@@ -20,7 +20,8 @@ import type { _PbrBindCtx, PbrExt } from "./pbr-flags.js";
 import { _getPbrExtsSorted, PBR2_ESM_SHADOW_OUTPUT, PBR2_NO_COLOR_OUTPUT, PBR2_HAS_UV2 } from "./pbr-flags.js";
 import { PBR_HAS_NORMAL_MAP, PBR_HAS_EMISSIVE, PBR_HAS_SPEC_GLOSS, PBR_HAS_DOUBLE_SIDED, PBR_HAS_ALPHA_BLEND } from "./pbr-flags.js";
 import { MSH_HAS_TANGENTS, MSH_HAS_UV2 } from "../mesh-features.js";
-import { REVERSE_DEPTH_COMPARE, targetSignatureKey } from "../../engine/render-target.js";
+import { REVERSE_DEPTH_COMPARE } from "../../engine/render-target.js";
+import { targetSignatureKey } from "../../engine/render-target-signature.js";
 import { getSceneBindGroupLayout } from "../../render/scene-helpers.js";
 import { _getAlphaToCoverageResolver } from "../../render/alpha-to-coverage-hook.js";
 
@@ -45,6 +46,14 @@ let _pbrFallbackResolver: ((engine: EngineContext) => Texture2D) | null = null;
 /** @internal Install the factor-only fallback-texture resolver (called by `createPbrMaterial`). */
 export function _installPbrFallbackResolver(resolve: (engine: EngineContext) => Texture2D): void {
     _pbrFallbackResolver = resolve;
+}
+
+/** IBL fallback resolver installed only by `enablePbrLocalCubemap`, keeping local
+ * fallback resolution behind the opt-in feature seam. */
+let _pbrIblFallbackResolver: ((material: unknown) => _PbrBindCtx["_env"]) | null = null;
+/** @internal */
+export function _installPbrIblFallbackResolver(resolve: (material: unknown) => _PbrBindCtx["_env"]): void {
+    _pbrIblFallbackResolver = resolve;
 }
 
 interface _PbrShaderBindings {
@@ -188,13 +197,8 @@ export function getOrCreatePbrPipeline(engine: EngineContext, sig: RenderTargetS
               }
             : {}),
         multisample: useAlphaToCoverage ? { count: sig._sampleCount, alphaToCoverageEnabled: true } : { count: sig._sampleCount },
-        // `topology` and `frontFace` are omitted deliberately: WebGPU already defaults them to
-        // "triangle-list" and "ccw", so naming them costs every PBR scene ~42 bytes to restate the
-        // spec. Anything unusual — a non-triangle topology, a strip's index format, or a mirrored
-        // mesh's reversed winding — arrives pre-built in `_prim` and overrides through the spread.
-        // Resolving those cases here instead costs the topology names, the winding branch and a call
-        // in scenes that never draw such a mesh, which is what pushed a dozen scenes past their
-        // bundle ceilings. See ComposedShader._prim.
+        // `topology` and `frontFace` remain omitted from the ordinary state so WebGPU supplies its defaults;
+        // non-default topology, strip index format, or mirrored winding arrives through `composed._prim`.
         primitive: { cullMode: hasDoubleSided ? ("none" as GPUCullMode) : "back", ...composed._prim },
     });
     bindings._pipelines.set(key, pipeline);
@@ -238,8 +242,8 @@ export function createPbrMeshBindGroup(
         _features2: features2,
         _meshFeatures: meshFeatures,
         _material: material,
-        _mesh: meshCtx ?? undefined,
-        _env: env,
+        _mesh: meshCtx,
+        _env: env ?? _pbrIblFallbackResolver?.(material) ?? null,
         _refractionTexture: refractionTexture,
     };
 

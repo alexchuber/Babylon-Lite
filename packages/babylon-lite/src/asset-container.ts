@@ -37,18 +37,23 @@ export interface AssetContainer {
      *  `enableBoneControl()` was called before loading; otherwise `undefined`.
      *  Drive bones via `getBoneByName()` + the `setBone*` functions. */
     skeletons?: Skeleton[];
+    /** Flow graphs parsed from the file (glTF KHR_interactivity). addToScene()
+     *  binds and runs them via the scene's frame loop. */
+    flowGraphs?: import("./flow-graph/context.js").LoadedFlowGraph[];
+    /** Resolves after `addToScene()` has instantiated all loaded flow graphs. */
+    flowGraphRuntimes?: Promise<readonly import("./flow-graph/runtime.js").FgRuntime[]>;
     /** @internal Per-frame animation tick closure pushed onto `scene._beforeRender` by
      *  `addToScene(scene, container)`. Stored so `removeFromScene(scene, container)` can
      *  splice it back out, keeping the two calls symmetric. */
     _beforeRenderHook?: (deltaMs: number) => void;
     /** Deferred scene-wiring hook contributed by a loader feature that needs the
      *  target `SceneContext` (which the loader itself never sees). `addToScene()`
-     *  invokes it once, synchronously, while processing the container. Used by
-     *  `EXT_lights_image_based` to install its image-based-light environment
-     *  (spherical harmonics + specular cubemap) onto the scene. Lazy features own
-     *  the closure so the core loader/scene stay feature-agnostic.
+     *  invokes it once, synchronously, while processing the container. Features
+     *  that need paired cleanup append it to `_sceneCleanups`.
      *  @internal */
-    _sceneSetup?: (scene: SceneContext) => void;
+    _sceneSetup?: (scene: SceneContext, container: AssetContainer) => void;
+    /** @internal Active feature cleanups keyed by each scene this container was added to. */
+    _sceneCleanups?: WeakMap<SceneContext, () => void>;
     /** Gaussian Splatting renderables contributed by the `KHR_gaussian_splatting`
      *  loader feature, one promise per GS primitive. The promises are populated by
      *  `_sceneSetup` (i.e. during `addToScene`); each resolves to the attached
@@ -84,10 +89,6 @@ export function getContainerMeshes(container: AssetContainer): Mesh[] {
         }
     };
     for (const entity of container.entities) {
-        // Lights have no scene-graph children to walk; skip them.
-        if ("lightType" in (entity as object)) {
-            continue;
-        }
         visit(entity as SceneNode);
     }
     return meshes;

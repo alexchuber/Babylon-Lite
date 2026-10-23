@@ -6,6 +6,7 @@ import type { Texture2D } from "../../texture/texture-2d.js";
 import type { EngineContext } from "../../engine/engine.js";
 import type { SceneContext } from "../../scene/scene.js";
 import type { Mesh } from "../../mesh/mesh.js";
+import type { WgslSource } from "../../shader/wgsl.js";
 
 export * from "./pbr-flag-bits.js";
 
@@ -23,20 +24,24 @@ export interface _PbrFragCtx {
     readonly _features: number;
     /** @internal */
     readonly _features2: number;
+    /** @internal Material-plugin shader variant, separate from native feature bits. */
+    readonly _pi?: number;
     /** @internal Mesh feature bits, separate from material feature bits. */
     readonly _meshFeatures: number;
     /** @internal Per-channel UV1 (TEXCOORD_1) selection bitmask (see pbr-material.ts). */
     readonly _uv2Mask?: number;
     /** @internal */
     readonly _hasIbl: boolean;
+    /** @internal Whether the scene, rather than only a material extension, supplies IBL. */
+    readonly _hasSceneIbl?: boolean;
     /** @internal */
     readonly _hasAnyNormal: boolean;
     /** @internal */
     readonly _hasSpecularAA: boolean;
     /** @internal Aniso bent-normal WGSL (IBL only). */
-    readonly _anisoBentNormalCode?: string;
+    readonly _anisoBentNormalCode?: WgslSource;
     /** @internal Pre-baked skybox WGSL (IBL only). */
-    readonly _iblSkyboxCalc?: string;
+    readonly _iblSkyboxCalc?: WgslSource;
 }
 
 /** @internal Bind-group entry build context threaded through `PbrExt.bind`. */
@@ -52,8 +57,8 @@ export interface _PbrBindCtx {
     /** @internal */
     readonly _material: unknown;
     /** @internal Populated for "vertex" phase (skeleton, morph). */
-    readonly _mesh?: { skeleton?: { boneTexture: GPUTexture } | null; morphTargets?: { deltasBuffer: GPUBuffer; weightsBuffer?: GPUBuffer } | null };
-    /** @internal Populated for "ibl" phase. */
+    readonly _mesh?: { skeleton?: { boneTexture: GPUTexture } | null; morphTargets?: { deltasBuffer: GPUBuffer; weightsBuffer?: GPUBuffer } | null } | null;
+    /** @internal Scene environment, or an active extension's fallback when the scene has none. */
     readonly _env?: { brdfLutView: GPUTextureView; brdfSampler: GPUSampler; specularCubeView: GPUTextureView; cubeSampler: GPUSampler } | null;
     /** @internal Per-render-task scene-color snapshot for transmissive RTT refraction. */
     readonly _refractionTexture?: Texture2D | null;

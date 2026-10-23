@@ -1,6 +1,6 @@
 # Azure Pipelines — Babylon Lite CI
 #
-# Runs on every PR targeting master. Eight parallel jobs:
+# Runs on every PR targeting master. Ten parallel jobs:
 #   1. Release Markers  — breaking-change marker validation
 #   2. API Report       — public API diff comment + breaking-change validation
 #   3. Unit Tests       — vitest + plumbing (Playwright)
@@ -9,6 +9,8 @@
 #   6. Parity (Cloud)   — pixel-diff via cloud browser with real WebGPU
 #   7. Lint             — ESLint + TypeScript type-check
 #   8. Playground Snapshot — per-PR playground deploy + PR comment
+#   9. Compat           — compatibility-layer build + unit tests
+#  10. WebGPU Integration — nonvisual shader/readback checks on BrowserStack
 #
 
 trigger: none
@@ -134,8 +136,8 @@ stages:
                 - script: pnpm exec playwright install chromium
                   displayName: "Install Playwright browsers"
 
-                - script: npx vitest run --project unit --project gl-unit --project no-webgpu
-                  displayName: "Run vitest unit tests"
+                - script: npx vitest run --project unit --project gl-unit --project no-webgpu --project lite-integration
+                  displayName: "Run vitest unit and Lite integration tests"
                   env:
                       CI: "true"
 
@@ -144,6 +146,12 @@ stages:
 
                 - script: npx vitest run --project gl-build
                   displayName: "Run vitest lite-gl build-output tests"
+
+                - script: pnpm test:integration:gl
+                  displayName: "Run lite-gl source integration tests"
+                  env:
+                      HEADLESS: "true"
+                      CI: "true"
 
                 # lite-gl visual parity vs the Babylon ThinEngine reference. WebGL2
                 # runs headless (SwiftShader in CI, enabled by CI=true in
@@ -175,10 +183,18 @@ stages:
                       PERF_REGRESSION_PCT: "50"
 
                 - script: |
-                      npx playwright test tests/lite/plumbing/dispose.spec.ts
-                      npx playwright test tests/lite/plumbing/material-swap.spec.ts
-                      npx playwright test tests/lite/plumbing/memory-leak.spec.ts
-                      npx playwright test tests/lite/plumbing/picking.spec.ts
+                      npx playwright test \
+                          tests/lite/plumbing/accessibility.spec.ts \
+                          tests/lite/plumbing/compute-lifecycle.spec.ts \
+                          tests/lite/plumbing/dispose.spec.ts \
+                          tests/lite/plumbing/material-swap.spec.ts \
+                          tests/lite/plumbing/mesh-lod-demand.spec.ts \
+                          tests/lite/plumbing/mesh-lod-pbr.spec.ts \
+                          tests/lite/plumbing/memory-leak.spec.ts \
+                          tests/lite/plumbing/picking.spec.ts \
+                          tests/lite/plumbing/scene-readiness.spec.ts \
+                          tests/lite/plumbing/scene176-startup.spec.ts \
+                          tests/lite/plumbing/splat-scene-startup.spec.ts
                   displayName: "Run plumbing tests"
                   env:
                       HEADLESS: "true"
@@ -198,15 +214,19 @@ stages:
                   displayName: "Report test results"
 
           # ──────────────────────────────────────────────────────────────
-          # Job 3: Bundle Size
+          # Nonvisual WebGPU integration runs independently so a unit/parity
+          # failure cannot prevent the point-splatting GPU checks from running.
+          # Reuses the parity CDP browser + Local tunnel, but needs no bundles.
           # ──────────────────────────────────────────────────────────────
-          - job: BundleSize
-            displayName: "Bundle Size"
+          - job: WebGPUIntegration
+            displayName: "WebGPU Integration (Cloud Browser)"
+            timeoutInMinutes: 30
             pool:
                 vmImage: "ubuntu-latest"
+            variables:
+                ArtifactsSafe: "false"
             steps:
                 - checkout: self
-                  persistCredentials: true
 
                 - task: UseNode@1
                   inputs:
@@ -220,8 +240,69 @@ stages:
                 - script: pnpm install --frozen-lockfile
                   displayName: "Install dependencies"
 
+                - script: bash scripts/browserstack-wait.sh pnpm test:integration-cloud
+                  displayName: "Run nonvisual point-splatting WebGPU tests"
+                  env:
+                      CI: "true"
+                      LAB_TEST_PORT: "5179"
+                      BROWSERSTACK_USERNAME: "$(BROWSERSTACK_USERNAME)"
+                      BROWSERSTACK_ACCESS_KEY: "$(BROWSERSTACK_ACCESS_KEY)"
+                      BSTACK_SESSIONS_REQUIRED: "1"
+                      BSTACK_LOCAL_IDENTIFIER: "bstack-lite-integration-$(Build.BuildId)"
+
+                - script: |
+                      set -euo pipefail
+                      npx tsx scripts/redact-secrets.ts sanitize test-results/webgpu-integration-junit.xml
+                      npx tsx scripts/redact-secrets.ts verify test-results/webgpu-integration-junit.xml
+                      echo "##vso[task.setvariable variable=ArtifactsSafe]true"
+                  condition: always()
+                  displayName: "Sanitize and verify publishable WebGPU integration results"
+                  env:
+                      BROWSERSTACK_USERNAME: "$(BROWSERSTACK_USERNAME)"
+                      BROWSERSTACK_ACCESS_KEY: "$(BROWSERSTACK_ACCESS_KEY)"
+
+                - task: PublishTestResults@2
+                  condition: and(always(), eq(variables['ArtifactsSafe'], 'true'))
+                  inputs:
+                      testResultsFormat: "JUnit"
+                      testResultsFiles: "test-results/webgpu-integration-junit.xml"
+                      testRunTitle: "WebGPU Integration"
+                      publishRunAttachments: false
+
+                - script: npx tsx scripts/report-test-results.ts test-results/webgpu-integration-junit.xml
+                  condition: and(always(), eq(variables['ArtifactsSafe'], 'true'))
+                  displayName: "Report WebGPU integration results"
+
+          # ──────────────────────────────────────────────────────────────
+          # Job 3: Bundle Size
+          # ──────────────────────────────────────────────────────────────
+          - job: BundleSize
+            displayName: "Bundle Size"
+            timeoutInMinutes: 120
+            pool:
+                vmImage: "ubuntu-latest"
+            steps:
+                - checkout: self
+                  persistCredentials: true
+                  fetchDepth: 0
+
+                - task: UseNode@1
+                  inputs:
+                      version: $(NODE_VERSION)
+
+                - script: |
+                      corepack enable
+                      corepack prepare pnpm@$(PNPM_VERSION) --activate
+                  displayName: "Enable pnpm via corepack"
+
+                - script: pnpm install --frozen-lockfile
+                  displayName: "Install dependencies"
+
+                - template: config/templates/select-affected-scenes.yml
+
                 - script: pnpm exec playwright install chromium
                   displayName: "Install Playwright browsers"
+                  condition: eq(variables['RUN_BUNDLE_TESTS'], 'true')
 
                 # Cache remote scene assets (models/textures/env fetched during
                 # measurement) across runs/PRs. The cache is a pure URL->bytes store
@@ -232,46 +313,59 @@ stages:
                 # accumulates new assets instead of freezing. Measurement still
                 # fetches-with-retry on a miss, so a cold/expired cache is only slower,
                 # never incorrect.
+                - script: mkdir -p "$(System.DefaultWorkingDirectory)/.bundle-asset-cache"
+                  displayName: "Initialize remote scene asset cache"
+
                 - task: Cache@2
                   displayName: "Cache remote scene assets"
+                  condition: eq(variables['RUN_BUNDLE_TESTS'], 'true')
                   inputs:
                       key: 'bundle-assets | v1 | "$(Build.BuildId)"'
                       restoreKeys: |
                           bundle-assets | v1
                       path: $(System.DefaultWorkingDirectory)/.bundle-asset-cache
 
-                - script: |
-                      TARGET_BRANCH="${SYSTEM_PULLREQUEST_TARGETBRANCH:-refs/heads/master}"
-                      TARGET_BRANCH="${TARGET_BRANCH#refs/heads/}"
-                      git fetch origin "$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH" --depth=1
-                  displayName: "Fetch master bundle baseline"
-
+                # The master baseline for the delta report is published by
+                # azure-pipelines-bundle-manifest.yml to public storage, so it is
+                # fetched over plain HTTPS rather than read out of git. Nothing is
+                # tracked, so there is nothing for branches to conflict on and
+                # nothing that can go stale and turn this job red.
+                #
+                # build:bundle-scenes fetches it itself (see
+                # writeMasterBundleManifest); a missing baseline is not an error —
+                # the delta report is skipped and the ceiling checks below, which
+                # are what actually gate size, are unaffected.
                 - script: pnpm build:bundle-scenes
                   displayName: "Build bundle scenes"
+                  condition: eq(variables['RUN_BUNDLE_TESTS'], 'true')
                   env:
                       SKIP_BJS: "true"
+                      BUNDLE_SCENES: "$(AFFECTED_BUNDLE_SCENES)"
 
-                # Enforce that any PR which moves per-scene bundle sizes also
-                # commits the regenerated per-scene manifest files. The build step
-                # above rewrites the working-tree per-scene manifest with fresh
-                # measurements; this compares them (rounded to whole KB) against the
-                # versions committed at HEAD.
-                - script: pnpm validate:bundle-manifest
-                  displayName: "Validate bundle manifest is committed"
+                # Bundle-content unit specs read the per-scene manifests under
+                # lab/public/bundle/manifest/. Those are build output rather than
+                # tracked source, so the Unit Tests job (which runs vitest before any
+                # build) self-skips them — run them here, where the build exists.
+                - script: npx vitest run --project unit tests/lite/unit/bundle-content-no-f64.test.ts tests/lite/unit/npe-particle-bundle-content.test.ts
+                  displayName: "Bundle content unit tests"
+                  condition: eq(variables['RUN_BUNDLE_TESTS'], 'true')
 
                 # Absolute ceiling checks (scene-config.json maxRawKB)
                 - script: npx playwright test tests/lite/parity/bundle-size.spec.ts --reporter=junit
                   displayName: "Bundle size ceiling checks"
+                  condition: eq(variables['RUN_BUNDLE_TESTS'], 'true')
                   env:
                       HEADLESS: "true"
+                      REUSE_BROWSER: "1"
+                      BUNDLE_SCENES: "$(AFFECTED_BUNDLE_SCENES)"
                       PLAYWRIGHT_JUNIT_OUTPUT_NAME: test-results/bundle-ceiling-junit.xml
 
                 - script: npx tsx scripts/report-test-results.ts test-results/bundle-ceiling-junit.xml
-                  condition: always()
+                  condition: and(always(), eq(variables['RUN_BUNDLE_TESTS'], 'true'))
                   displayName: "Report bundle-size results to Azure"
 
                 - task: PublishTestResults@2
-                  condition: always()
+                  condition: and(always(), eq(variables['RUN_BUNDLE_TESTS'], 'true'))
                   displayName: "Publish bundle-size test results"
                   inputs:
                       testResultsFormat: JUnit
@@ -280,7 +374,7 @@ stages:
 
                 # Generate bundle-size delta comment for PR
                 - script: npx tsx scripts/report-bundle-size-deltas.ts
-                  condition: always()
+                  condition: and(always(), eq(variables['RUN_BUNDLE_TESTS'], 'true'))
                   displayName: "Generate bundle-size delta comment"
 
                 - task: GitHubComment@0
@@ -313,6 +407,9 @@ stages:
             timeoutInMinutes: 120
             pool:
                 vmImage: "ubuntu-latest"
+            variables:
+                ArtifactsSafe: "false"
+                ReportUploaded: "false"
             steps:
                 - checkout: self
                   fetchDepth: 0
@@ -330,12 +427,16 @@ stages:
                 - script: pnpm install --frozen-lockfile
                   displayName: "Install dependencies"
 
+                - template: config/templates/select-affected-scenes.yml
+
                 # Build current bundle scenes (skip size measurement — not needed for perf)
                 - script: pnpm build:bundle-scenes
                   displayName: "Build current bundle scenes"
+                  condition: eq(variables['RUN_PERF_TESTS'], 'true')
                   env:
                       SKIP_BJS: "true"
                       SKIP_MEASURE: "true"
+                      BUNDLE_SCENES: "$(AFFECTED_PERF_SCENES)"
 
                 # Resolve baseline ref SHA for cache key.
                 # Must mirror getBaselineRef() in scripts/build-perf-baseline.ts so the cache key
@@ -363,18 +464,22 @@ stages:
                       echo "Baseline SHA: $BASELINE_SHA"
                       mkdir -p lab/public/bundle-baseline
                   displayName: "Resolve baseline ref"
+                  condition: eq(variables['RUN_PERF_TESTS'], 'true')
 
                 - task: Cache@2
                   inputs:
-                      key: '"perf-baseline" | "$(BASELINE_SHA)"'
+                      key: '"perf-baseline" | "$(BASELINE_SHA)" | "$(AFFECTED_PERF_SCENES_HASH)"'
                       path: $(System.DefaultWorkingDirectory)/lab/public/bundle-baseline
                       cacheHitVar: BASELINE_CACHE_HIT
                   displayName: "Cache baseline bundles"
+                  condition: eq(variables['RUN_PERF_TESTS'], 'true')
 
                 # Build baseline bundle scenes from last release tag (or master)
                 - script: pnpm build:perf-baseline
                   displayName: "Build baseline bundle scenes"
-                  condition: ne(variables.BASELINE_CACHE_HIT, 'true')
+                  condition: and(eq(variables['RUN_PERF_TESTS'], 'true'), ne(variables.BASELINE_CACHE_HIT, 'true'))
+                  env:
+                      BUNDLE_SCENES: "$(AFFECTED_PERF_SCENES)"
 
                 # Generate baseline HTML loader pages (needed even on cache hit)
                 - script: |
@@ -391,13 +496,16 @@ stages:
                       console.log('Generated ' + scenes.length + ' baseline HTML pages');
                       "
                   displayName: "Generate baseline HTML pages"
-                  condition: eq(variables.BASELINE_CACHE_HIT, 'true')
+                  condition: and(eq(variables['RUN_PERF_TESTS'], 'true'), eq(variables.BASELINE_CACHE_HIT, 'true'))
 
                 # Runs current vs baseline on same BrowserStack macOS Chrome instance
                 - script: pnpm test:perf-cloud
                   displayName: "Run perf regression tests (current vs stable)"
+                  condition: eq(variables['RUN_PERF_TESTS'], 'true')
                   env:
                       HEADLESS: "true"
+                      REUSE_BROWSER: "1"
+                      PERF_SCENES: "$(AFFECTED_PERF_SCENE_IDS)"
                       PERF_REGRESSION_PCT: "$(PERF_REGRESSION_PCT)"
                       PERF_FRAMES: "$(PERF_FRAMES)"
                       PERF_RUNS: "$(PERF_RUNS)"
@@ -405,23 +513,34 @@ stages:
                       BROWSERSTACK_USERNAME: "$(BROWSERSTACK_USERNAME)"
                       BROWSERSTACK_ACCESS_KEY: "$(BROWSERSTACK_ACCESS_KEY)"
 
+                # Only the JUnit file and explicit HTML report allowlist may be
+                # published. Raw Playwright output/trace directories stay private.
+                - script: |
+                      set -euo pipefail
+                      npx tsx scripts/redact-secrets.ts sanitize test-results/perf-junit.xml test-results/perf-report
+                      npx tsx scripts/redact-secrets.ts verify test-results/perf-junit.xml test-results/perf-report
+                      echo "##vso[task.setvariable variable=ArtifactsSafe]true"
+                  condition: and(always(), eq(variables['RUN_PERF_TESTS'], 'true'))
+                  displayName: "Sanitize and verify publishable perf artifacts"
+                  env:
+                      BROWSERSTACK_USERNAME: "$(BROWSERSTACK_USERNAME)"
+                      BROWSERSTACK_ACCESS_KEY: "$(BROWSERSTACK_ACCESS_KEY)"
+
                 - task: PublishTestResults@2
-                  condition: always()
+                  condition: and(always(), eq(variables['ArtifactsSafe'], 'true'))
                   inputs:
                       testResultsFormat: "JUnit"
-                      testResultsFiles: "**/test-results/perf-junit.xml"
+                      testResultsFiles: "test-results/perf-junit.xml"
                       mergeTestResults: true
                       testRunTitle: "Perf Regression"
+                      publishRunAttachments: false
                   continueOnError: true
-
                 - script: npx tsx scripts/report-test-results.ts test-results/perf-junit.xml
-                  condition: always()
+                  condition: and(always(), eq(variables['ArtifactsSafe'], 'true'))
                   continueOnError: true
                   displayName: "Report test results"
-
                 - template: config/templates/upload-test-report.yml
                   parameters:
-                      reportDir: $(System.DefaultWorkingDirectory)/test-results/perf-report
                       reportType: perf
 
           # ──────────────────────────────────────────────────────────────
@@ -432,8 +551,12 @@ stages:
             timeoutInMinutes: 180
             pool:
                 vmImage: "ubuntu-latest"
+            variables:
+                ArtifactsSafe: "false"
+                ReportUploaded: "false"
             steps:
                 - checkout: self
+                  fetchDepth: 0
 
                 - task: UseNode@1
                   inputs:
@@ -447,11 +570,15 @@ stages:
                 - script: pnpm install --frozen-lockfile
                   displayName: "Install dependencies"
 
+                - template: config/templates/select-affected-scenes.yml
+
                 - script: pnpm build:bundle-scenes
                   displayName: "Build bundle scenes"
+                  condition: eq(variables['RUN_PARITY_TESTS'], 'true')
                   env:
                       SKIP_BJS: "true"
                       SKIP_MEASURE: "true"
+                      BUNDLE_SCENES: "$(AFFECTED_PARITY_SCENES)"
 
                 # Run parity tests on BrowserStack (macOS Chrome with real WebGPU)
                 # via a direct CDP connection — NO browserstack-node-sdk. The wait
@@ -464,41 +591,44 @@ stages:
                 # from the BabylonJS-BrowserStack variable group.
                 - script: bash scripts/browserstack-wait.sh pnpm test:parity-cloud
                   displayName: "Run parity tests (BrowserStack, sharded)"
+                  condition: eq(variables['RUN_PARITY_TESTS'], 'true')
                   env:
                       HEADLESS: "true"
+                      REUSE_BROWSER: "1"
+                      AFFECTED_PARITY_SCENE_IDS: "$(AFFECTED_PARITY_SCENE_IDS)"
                       BROWSERSTACK_USERNAME: "$(BROWSERSTACK_USERNAME)"
                       BROWSERSTACK_ACCESS_KEY: "$(BROWSERSTACK_ACCESS_KEY)"
                       BSTACK_SESSIONS_REQUIRED: "2"
                       BSTACK_LOCAL_IDENTIFIER: "bstack-lite-parity-$(Build.BuildId)"
 
-                # Scrub BrowserStack credentials from the report/JUnit artifacts
-                # before they are published/uploaded. The CDP wsEndpoint embeds the
-                # access key and can surface in Playwright error output.
-                - script: npx tsx scripts/redact-secrets.ts test-results
-                  condition: always()
-                  continueOnError: true
-                  displayName: "Redact secrets from test artifacts"
+                # Only the JUnit file and explicit HTML report allowlist may be
+                # published. Raw Playwright output/trace directories stay private.
+                - script: |
+                      set -euo pipefail
+                      npx tsx scripts/redact-secrets.ts sanitize test-results/parity-junit.xml test-results/parity-report
+                      npx tsx scripts/redact-secrets.ts verify test-results/parity-junit.xml test-results/parity-report
+                      echo "##vso[task.setvariable variable=ArtifactsSafe]true"
+                  condition: and(always(), eq(variables['RUN_PARITY_TESTS'], 'true'))
+                  displayName: "Sanitize and verify publishable parity artifacts"
                   env:
                       BROWSERSTACK_USERNAME: "$(BROWSERSTACK_USERNAME)"
                       BROWSERSTACK_ACCESS_KEY: "$(BROWSERSTACK_ACCESS_KEY)"
 
                 - task: PublishTestResults@2
-                  condition: always()
+                  condition: and(always(), eq(variables['ArtifactsSafe'], 'true'))
                   inputs:
                       testResultsFormat: "JUnit"
-                      testResultsFiles: "**/test-results/parity-junit.xml"
+                      testResultsFiles: "test-results/parity-junit.xml"
                       mergeTestResults: true
                       testRunTitle: "Parity (Cloud)"
+                      publishRunAttachments: false
                   continueOnError: true
-
                 - script: npx tsx scripts/report-test-results.ts test-results/parity-junit.xml
-                  condition: always()
+                  condition: and(always(), eq(variables['ArtifactsSafe'], 'true'))
                   continueOnError: true
                   displayName: "Report test results"
-
                 - template: config/templates/upload-test-report.yml
                   parameters:
-                      reportDir: $(System.DefaultWorkingDirectory)/test-results/parity-report
                       reportType: parity
 
           # ──────────────────────────────────────────────────────────────
@@ -526,23 +656,33 @@ stages:
                 - script: npx eslint . --format ./scripts/eslint-vso-formatter.cjs
                   displayName: "ESLint"
 
+                # Every type-check below pipes tsc into sed to turn TS diagnostics into
+                # `##vso[task.logissue]` annotations. A shell pipeline exits with the status
+                # of its LAST command, and sed always succeeds — so without `pipefail` a
+                # failing tsc reported green. `task.logissue type=error` annotates the build
+                # but does not fail the task on its own, so nothing else caught it either.
                 - script: |
+                      set -euo pipefail
                       npx tsc -p packages/babylon-lite/tsconfig.json --noEmit 2>&1 | sed -E 's/^(.+)\(([0-9]+),([0-9]+)\): error (TS[0-9]+): (.+)/##vso[task.logissue type=error;sourcepath=\1;linenumber=\2;columnnumber=\3]\4: \5/'
                   displayName: "TypeScript type-check (package)"
 
                 - script: |
+                      set -euo pipefail
                       npx tsc -p lab/tsconfig.typecheck.json --noEmit 2>&1 | sed -E 's/^(.+)\(([0-9]+),([0-9]+)\): error (TS[0-9]+): (.+)/##vso[task.logissue type=error;sourcepath=\1;linenumber=\2;columnnumber=\3]\4: \5/'
                   displayName: "TypeScript type-check (lab)"
 
                 - script: |
+                      set -euo pipefail
                       npx tsc -p tests/lite/tsconfig.json --noEmit 2>&1 | sed -E 's/^(.+)\(([0-9]+),([0-9]+)\): error (TS[0-9]+): (.+)/##vso[task.logissue type=error;sourcepath=\1;linenumber=\2;columnnumber=\3]\4: \5/'
                   displayName: "TypeScript type-check (tests)"
 
                 - script: |
+                      set -euo pipefail
                       npx tsc -p packages/babylon-lite-gl/tsconfig.json --noEmit 2>&1 | sed -E 's/^(.+)\(([0-9]+),([0-9]+)\): error (TS[0-9]+): (.+)/##vso[task.logissue type=error;sourcepath=\1;linenumber=\2;columnnumber=\3]\4: \5/'
                   displayName: "TypeScript type-check (gl package)"
 
                 - script: |
+                      set -euo pipefail
                       npx tsc -p tests/gl/tsconfig.json --noEmit 2>&1 | sed -E 's/^(.+)\(([0-9]+),([0-9]+)\): error (TS[0-9]+): (.+)/##vso[task.logissue type=error;sourcepath=\1;linenumber=\2;columnnumber=\3]\4: \5/'
                   displayName: "TypeScript type-check (gl tests)"
 
@@ -585,11 +725,16 @@ stages:
                 - script: pnpm install --frozen-lockfile
                   displayName: "Install dependencies"
 
+                # `set -euo pipefail` is required here for the same reason as in the Lint
+                # job above: sed is the last command in the pipeline, so without it a
+                # failing tsc is masked by sed's zero exit and the step reports green.
                 - script: |
+                      set -euo pipefail
                       npx tsc -p packages/babylon-lite-compat/tsconfig.json --noEmit 2>&1 | sed -E 's/^(.+)\(([0-9]+),([0-9]+)\): error (TS[0-9]+): (.+)/##vso[task.logissue type=error;sourcepath=\1;linenumber=\2;columnnumber=\3]\4: \5/'
                   displayName: "TypeScript type-check (compat src)"
 
                 - script: |
+                      set -euo pipefail
                       npx tsc -p packages/babylon-lite-compat/tests/tsconfig.json --noEmit 2>&1 | sed -E 's/^(.+)\(([0-9]+),([0-9]+)\): error (TS[0-9]+): (.+)/##vso[task.logissue type=error;sourcepath=\1;linenumber=\2;columnnumber=\3]\4: \5/'
                   displayName: "TypeScript type-check (compat tests)"
 

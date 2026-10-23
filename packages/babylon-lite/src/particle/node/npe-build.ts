@@ -9,11 +9,11 @@
 import type { EngineContext } from "../../engine/engine.js";
 import type { SceneContext } from "../../scene/scene.js";
 import type { Vec3, Mat4, Vec2, Color4 } from "../../math/types.js";
-import { mat4Translation } from "../../math/mat4-translation.js";
+import { createTranslationMat4 } from "../../math/create-translation-mat4.js";
 import { mat4GetTranslationToRef } from "../../math/mat4-transform.js";
 import type { ParticleGraph, ParsedParticleBlock, ParsedParticleInput } from "./npe-types.js";
 import type { ParticleBuffer } from "../particle-buffer.js";
-import { createParticleSystem, type ParticleSystem } from "../particle-system.js";
+import { createParticleSystem, type ParticleEmitterInverse, type ParticleSystem } from "../particle-system.js";
 import type { NpeGetter, NpeValue } from "./npe-value.js";
 import { loadNpeBlockEvaluator } from "./npe-registry.js";
 
@@ -53,6 +53,9 @@ export interface NpeBuildState {
     capacity: number;
     emitter: Vec3;
     emitterWorldMatrix: Mat4;
+    emitterInverseWorldMatrices?: ParticleEmitterInverse[];
+    /** @internal Shared only by Loop-scope local-variable evaluators in this system build. */
+    _localVariableLoopEpoch?: { value: number };
     isLocal: boolean;
     scene: SceneContext;
     textureBaseUrl?: string;
@@ -82,9 +85,14 @@ export interface NodeParticleSet {
 
 /** Options for building a node-particle set. */
 export interface BuildNodeParticleOptions {
+    /** Emitter world position (translation-only emitter). Ignored when {@link BuildNodeParticleOptions.emitterWorldMatrix} is set. */
     emitter?: Vec3;
+    /** Emitter world matrix (translation + rotation + scale). Takes precedence over {@link BuildNodeParticleOptions.emitter}. */
     emitterWorldMatrix?: Mat4;
+    /** Base URL used to resolve relative texture URLs in the graph (mirrors BJS texture-base resolution). */
     textureBaseUrl?: string;
+    /** @internal */
+    _setupEmitter?: (state: NpeBuildState) => void;
 }
 
 /** Build data-oriented particle systems from a parsed graph. */
@@ -108,7 +116,7 @@ export async function buildNodeParticleSet(engine: EngineContext, scene: SceneCo
             mat4GetTranslationToRef(emitterWorldMatrix, emitter);
         } else {
             const e = options.emitter ?? { x: 0, y: 0, z: 0 };
-            emitterWorldMatrix = mat4Translation(e.x, e.y, e.z);
+            emitterWorldMatrix = createTranslationMat4(e.x, e.y, e.z);
             emitter.x = e.x;
             emitter.y = e.y;
             emitter.z = e.z;
@@ -123,6 +131,7 @@ export async function buildNodeParticleSet(engine: EngineContext, scene: SceneCo
             scene,
             textureBaseUrl: options.textureBaseUrl,
         };
+        options._setupEmitter?.(state);
 
         const outputs = new Map<string, NpeGetter>();
         const built = new Set<number>();
@@ -203,7 +212,6 @@ export async function buildNodeParticleSet(engine: EngineContext, scene: SceneCo
         };
 
         await buildBlock(systemId);
-
         systems.push(system);
     }
 
